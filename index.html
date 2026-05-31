@@ -253,7 +253,20 @@ const TRACK = {
   wallHeight: 120,
   startY: 0,
   markerStep: 500,      // distance line every 500 ups
+  // Pad layout — sized so bot7/bot8 (slowest, +30% off θ*) clear every gap.
+  pad_length:   400,    // each pad runs this many ups along +y
+  pad_gap:      150,    // lava gap between pads (bot7 first jump d ≈ 195)
+  pad_thickness: 80,    // visible side height of the pad slab
+  lava_depth:   120,    // z < −lava_depth → "fell in lava"
 };
+const PAD_PERIOD = TRACK.pad_length + TRACK.pad_gap;
+// Is (x,y) over a solid pad surface? Used by the landing check.
+function onPad(x, y) {
+  if (x < -TRACK.width/2 || x > TRACK.width/2) return false;
+  if (y < 0 || y > TRACK.length) return false;
+  const yMod = y % PAD_PERIOD;
+  return yMod <= TRACK.pad_length;  // pad surface is [0, pad_length] inclusive
+}
 const EYE_HEIGHT = 26;  // Q3 player view height when standing
 const FOV_DEG = 110;    // defrag-typical horizontal FOV
 
@@ -280,7 +293,7 @@ const cfg = {
 function makeEntity(yaw) {
   return {
     x:0, y:0, z:0, vx:0, vy:0, vz:0,
-    yaw: yaw, onGround: true, justLanded: false,
+    yaw: yaw, onGround: true, justLanded: false, fell: false,
     lastTakeoffSpeed: 0, lastLandSpeed: 0, lastGain: 0,
     jumps: 0, strafeSide: 1, landCount: 0, cyclePhase: 0,
     trail: [],
@@ -463,13 +476,20 @@ function step(e, inputs, dt) {
   if (!e.onGround) {
     e.vz -= PHYS.gravity * dt;
     e.z += e.vz * dt;
-    if (e.z <= 0 && e.vz <= 0) {
+    // Land on pad surface (z=0) only if (x,y) is over a pad.
+    if (e.z <= 0 && e.vz <= 0 && onPad(e.x, e.y)) {
       e.z = 0; e.vz = 0;
       e.onGround = true; e.justLanded = true;
       e.lastLandSpeed = Math.hypot(e.vx, e.vy);
       e.lastGain = e.lastLandSpeed - e.lastTakeoffSpeed;
       const lastLog = e.jumpLog[e.jumpLog.length - 1];
       if (lastLog) { lastLog.land = e.lastLandSpeed; lastLog.gain = e.lastGain; }
+    } else if (e.z < -TRACK.lava_depth && !e.fell) {
+      // Fell into the lava — mark entity. Bots freeze in place; player
+      // restart is handled at the top of the frame loop.
+      e.fell = true;
+      e.vx = e.vy = e.vz = 0;
+      e.z = -TRACK.lava_depth;
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
@@ -506,6 +526,8 @@ function botStep(b, dt) {
     b.currentInputs = { fm: 0, sm: 0, jump: false };
     return;
   }
+  // Fell in lava — stay where you are.
+  if (b.fell) return;
   // ── Strafe-side selection: STRICT PATTERN, no drift correction ──
   if (b.justLanded) {
     b.landCount += 1;
@@ -771,9 +793,10 @@ function frame() {
     if (raceStarted) {
       for (const b of bots) botStep(b, simDt);
     } else {
-      // Keep me's race timer pinned at 0 while we're still waiting.
       me.runTime = 0;
     }
+    // If the player fell in lava, restart the whole race.
+    if (me.fell) { resetToStart(); break; }
     // yaw rate tracking
     let dyaw = me.yaw - lastYawForRate;
     while (dyaw > Math.PI) dyaw -= 2*Math.PI;
@@ -1019,11 +1042,7 @@ function renderFirstPerson(W, H) {
   const yViewMin = Math.max(0, cam.y - 5000);
   const yViewMax = Math.min(TRACK.length, cam.y + 5000);
 
-  // ── Track floor fill — ONE big polygon, no chunk alternation. Chunked
-  // alternation flickers when the camera straddles a boundary because the
-  // clipped polygon recomputes its near-edge each frame and the boundary
-  // between adjacent colors shifts by sub-pixels. A single uniform fill +
-  // decorative cross-lines on top is robust under any camera motion.
+  // ── Lava floor (deep red, visible through pad gaps) + discrete pads. ──
   function fillPoly(pts, color) {
     const clipped = clipPolyToViewport(pts);
     if (clipped.length < 3) return;
@@ -1033,32 +1052,70 @@ function renderFirstPerson(W, H) {
     for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
     ctx.closePath(); ctx.fill();
   }
+  // Lava — one big polygon at the lava plane, then a brighter overlay so the
+  // pulse is visible. Animates with tNow.
   {
-    const floorProj = projPolygonClipped([
-      [-halfW, yViewMin, 0], [halfW, yViewMin, 0],
-      [halfW, yViewMax, 0],  [-halfW, yViewMax, 0],
+    const z = -TRACK.lava_depth;
+    const lavaProj = projPolygonClipped([
+      [-halfW, yViewMin, z], [halfW, yViewMin, z],
+      [halfW, yViewMax, z],  [-halfW, yViewMax, z],
     ]);
-    fillPoly(floorProj, '#222b39');
+    fillPoly(lavaProj, '#3a0a04');
+    // Pulse stripes — alternate brighter cells in 200-ups bands.
+    const pulse = (Math.sin(tNow * 1.5) + 1) * 0.5; // 0..1
+    for (let y = Math.floor(yViewMin/200)*200; y < yViewMax; y += 200) {
+      const y1 = Math.max(yViewMin, y), y2 = Math.min(yViewMax, y + 200);
+      if (((y/200) | 0) % 2 === 0) continue;
+      const proj = projPolygonClipped([
+        [-halfW, y1, z], [halfW, y1, z],
+        [halfW, y2, z],  [-halfW, y2, z],
+      ]);
+      const r = Math.round(180 + 50*pulse);
+      const g = Math.round(40 + 20*pulse);
+      fillPoly(proj, `rgb(${r}, ${g}, 8)`);
+    }
+  }
+  // Each pad — bright top + visible front/back faces so depth reads.
+  const padStartK = Math.max(0, Math.floor(yViewMin / PAD_PERIOD));
+  const padEndK   = Math.min(Math.ceil(TRACK.length / PAD_PERIOD), Math.ceil(yViewMax / PAD_PERIOD));
+  for (let k = padStartK; k <= padEndK; k++) {
+    const y1 = k * PAD_PERIOD;
+    const y2 = y1 + TRACK.pad_length;
+    if (y2 < yViewMin || y1 > yViewMax) continue;
+    // Front face (looking down +y, the near face of pad k is at y=y1)
+    {
+      const f = projPolygonClipped([
+        [-halfW, y1, 0], [halfW, y1, 0],
+        [halfW, y1, -TRACK.pad_thickness], [-halfW, y1, -TRACK.pad_thickness],
+      ]);
+      fillPoly(f, '#3d4451');
+    }
+    // Back face (at y=y2)
+    {
+      const f = projPolygonClipped([
+        [-halfW, y2, 0], [halfW, y2, 0],
+        [halfW, y2, -TRACK.pad_thickness], [-halfW, y2, -TRACK.pad_thickness],
+      ]);
+      fillPoly(f, '#2d3340');
+    }
+    // Top surface
+    {
+      const t = projPolygonClipped([
+        [-halfW, y1, 0], [halfW, y1, 0],
+        [halfW, y2, 0],  [-halfW, y2, 0],
+      ]);
+      fillPoly(t, '#1f2733');
+    }
+    // Glow stripe on front edge (cyan) for pop
+    const edge = projectLine(-halfW, y1, 0.5, halfW, y1, 0.5);
+    if (edge) strokeLine(edge[0], edge[1], '#67e8f9', 3);
+    const edge2 = projectLine(-halfW, y2, 0.5, halfW, y2, 0.5);
+    if (edge2) strokeLine(edge2[0], edge2[1], '#fbbf24', 2);
   }
 
-  // ── Centerline lane stripe (bright yellow, dashed every 250 ups) ──
-  for (let y = Math.floor(yViewMin/250)*250; y < yViewMax; y += 250) {
-    if (Math.floor(y/250) % 2 !== 0) continue;
-    const y1 = y, y2 = Math.min(y + 125, yViewMax);
-    const seg = projectLine(0, y1, 0, 0, y2, 0);
-    if (seg) strokeLine(seg[0], seg[1], '#d29922', 3);
-  }
-  // ── Side painted lanes (white edge) ──
-  for (const sx of [-halfW + 20, halfW - 20]) {
-    const seg = projectLine(sx, yViewMin, 0, sx, yViewMax, 0);
-    if (seg) strokeLine(seg[0], seg[1], 'rgba(230,237,243,0.55)', 2);
-  }
-  // ── Floor cross-lines (brighter, every 100 ups) ──
-  for (let y = Math.floor(yViewMin/100)*100; y <= yViewMax; y += 100) {
-    const big = (y % 500 === 0);
-    const seg = projectLine(-halfW, y, 0, halfW, y, 0);
-    if (seg) strokeLine(seg[0], seg[1], big ? 'rgba(110,118,129,0.7)' : 'rgba(110,118,129,0.25)', big ? 1.5 : 1);
-  }
+  // Centerline / lane / cross-line decorations removed — they crossed the
+  // gaps and looked broken. The pads themselves carry the depth cues now
+  // (cyan front edge + amber back edge, plus distance markers further down).
 
   // ── Walls — fill is derived FROM the projected base+top edges in screen
   // space, rather than re-running 3D polygon clipping on 4 corners. Because
@@ -1083,12 +1140,10 @@ function renderFirstPerson(W, H) {
       if (cap) strokeLine(cap[0], cap[1], '#58a6ff', 3);
     }
   }
-  // ── Distance markers on the ground every 500 ups, with big numbers every 1000 ──
+  // ── Distance markers — only on pad surfaces (skip lava gaps). ──
   for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
     if (y <= 0 || y > TRACK.length) continue;
-    const line = projectLine(-halfW, y, 0, halfW, y, 0);
-    if (line) strokeLine(line[0], line[1], (y % 1000 === 0) ? 'rgba(255,255,255,0.5)' : 'rgba(180,180,180,0.25)', y % 1000 === 0 ? 2.5 : 1.5);
-    // Floating sign at floor center
+    if (!onPad(0, y)) continue;
     if (y % 1000 === 0) {
       const c = project(0, y, 8);
       if (c) {
@@ -1571,6 +1626,7 @@ function updateHUD() {
 
   // Race list — sorted by finishTime (finished first), then by progress.
   function fmtRace(e) {
+    if (e.fell) return 'FELL ✗';
     if (e.finishTime != null) return `${e.finishTime.toFixed(2)}s @ ${e.finishSpeed.toFixed(0)} ups`;
     return `${e.runTime.toFixed(1)}s · ${(Math.max(0, Math.min(1, e.y/TRACK.length))*100).toFixed(1)}%`;
   }
