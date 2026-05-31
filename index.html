@@ -113,6 +113,8 @@
         <span><i class="sw" style="background:#a78bfa"></i>bot4·LLRR·+10%</span>
         <span><i class="sw" style="background:#facc15"></i>bot5·LRLR·+20%</span>
         <span><i class="sw" style="background:#f87171"></i>bot6·LLRR·+20%</span>
+        <span><i class="sw" style="background:#fb7185"></i>bot7·LRLR·+30%</span>
+        <span><i class="sw" style="background:#d946ef"></i>bot8·LLRR·+30%</span>
         <span><i class="sw" style="background:var(--yellow)"></i>g_speed</span>
       </div>
     </div>
@@ -189,7 +191,7 @@
       <div id="raceList" style="font-size:12px; line-height:1.6"></div>
       <div class="row" style="margin-top:4px"><span>You</span><span class="v" id="meRace">running…</span></div>
       <div style="color:var(--dim); font-size:11px; margin-top:6px; line-height:1.4">
-        <b style="color:#56d364">Bot1/bot2</b> aim at θ* (perfect). <b style="color:#22d3ee">Bot3</b>/<b style="color:#a78bfa">bot4</b> aim +10% past θ* (over-shoot). <b style="color:#facc15">Bot5</b>/<b style="color:#f87171">bot6</b> aim +20% past θ* (further over-shoot). Odd bots use LRLR, even use LLRR. Each bot has its own calibrated pre-tilt so the trajectory stays close to centerline. R resets every timer.
+        <b style="color:#56d364">Bot1/bot2</b> aim at θ* (perfect). <b style="color:#22d3ee">Bot3</b>/<b style="color:#a78bfa">bot4</b> at +10%, <b style="color:#facc15">bot5</b>/<b style="color:#f87171">bot6</b> at +20%, <b style="color:#fb7185">bot7</b>/<b style="color:#d946ef">bot8</b> at +30% past θ*. Odd bots use LRLR, even use LLRR. Each bot has its own calibrated pre-tilt so the trajectory stays close to centerline. R resets every timer.
       </div>
     </div>
 
@@ -319,10 +321,17 @@ bot5.label = 'bot5'; bot5.color = '#facc15'; bot5.strategy = 'alt1'; bot5.thetaO
 const bot6 = makeEntity(Math.PI/2);
 bot6.label = 'bot6'; bot6.color = '#f87171'; bot6.strategy = 'alt2'; bot6.thetaOffsetFrac = +0.20;
 
-const bots = [bot1, bot2, bot3, bot4, bot5, bot6];
+// 30%-off bots — view +30% past θ* (even further over-shoot).
+const bot7 = makeEntity(Math.PI/2);
+bot7.label = 'bot7'; bot7.color = '#fb7185'; bot7.strategy = 'alt1'; bot7.thetaOffsetFrac = +0.30;
+
+const bot8 = makeEntity(Math.PI/2);
+bot8.label = 'bot8'; bot8.color = '#d946ef'; bot8.strategy = 'alt2'; bot8.thetaOffsetFrac = +0.30;
+
+const bots = [bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
 
 let cam = me;
-const camCycle = [me, bot1, bot2, bot3, bot4, bot5, bot6];
+const camCycle = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
 function setCam(target) {
   cam = target;
   // Spectating a bot: clear player input so 'me' stops moving in the background.
@@ -670,14 +679,14 @@ function applyEntityIdentity(e, src) {
 // swept in the headless Node port /tmp/cpm-tilt-search.js for minimum
 // peak |x| over the 30 000-ups run.
 const PRE_TILT_BY_PHYSICS = {
-  vq3: { bot1:  6.125, bot2: 16.375, bot3:  7.875, bot4: 19.625, bot5:  9.875, bot6: 22.500 },
-  cpm: { bot1:  6.625, bot2: 17.500, bot3:  8.500, bot4: 20.125, bot5: 10.375, bot6: 22.875 },
+  vq3: { bot1:  6.125, bot2: 16.375, bot3:  7.875, bot4: 19.625, bot5:  9.875, bot6: 22.500, bot7: 11.750, bot8: 25.250 },
+  cpm: { bot1:  6.625, bot2: 17.500, bot3:  8.500, bot4: 20.125, bot5: 10.375, bot6: 22.875, bot7: 12.125, bot8: 25.500 },
 };
 const PRE_TILT_DEG = { ...PRE_TILT_BY_PHYSICS.vq3 };
 
 function resetToStart() {
   // Save and restore identity (label/color/strategy/thetaOffsetFrac) across reset.
-  const ents = [me, bot1, bot2, bot3, bot4, bot5, bot6];
+  const ents = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
   const ids = ents.map(e => ({label: e.label, color: e.color, strategy: e.strategy, thetaOffsetFrac: e.thetaOffsetFrac}));
   ents.forEach(e => Object.assign(e, makeEntity(Math.PI/2)));
   ents.forEach((e, i) => applyEntityIdentity(e, ids[i]));
@@ -693,6 +702,8 @@ function resetToStart() {
   bot4.x = +60;  bot4.y = 0;  bot4.strafeSide = -1;  bot4.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot4);
   bot5.x = -90;  bot5.y = 0;  bot5.strafeSide = -1;  bot5.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot5);
   bot6.x = +90;  bot6.y = 0;  bot6.strafeSide = -1;  bot6.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot6);
+  bot7.x =-120;  bot7.y = 0;  bot7.strafeSide = -1;  bot7.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot7);
+  bot8.x =+120;  bot8.y = 0;  bot8.strafeSide = -1;  bot8.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot8);
   speedHist.length = 0; yawRateHistory.length = 0;
   sessionPeak = 0;
   raceStarted = false;
