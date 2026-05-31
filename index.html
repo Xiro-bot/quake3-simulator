@@ -1026,34 +1026,42 @@ function computeOptimal() {
 
 function renderFirstPerson(W, H) {
   VP_W = W; VP_H = H;
-  // ── Sky (brighter, with horizon glow + sun disc) ──
-  const sky = ctx.createLinearGradient(0,0,0,H/2);
-  sky.addColorStop(0,    '#1a2342');
-  sky.addColorStop(0.55, '#3a4a78');
-  sky.addColorStop(1,    '#6b7fb0');
-  ctx.fillStyle = sky; ctx.fillRect(0,0,W,H/2);
-  // Sun (fixed at +y direction so always "ahead" — orient by world)
+  // The horizon line in screen space moves with pitch. For a point at world
+  // infinity in the +y direction at z=0, y_screen = H/2 + focal*sin(pitch).
+  const pitch = cam.pitch || 0;
+  const focalScreen = (W/2) / Math.tan(FOV_DEG/2 * Math.PI/180);
+  const horizonY = Math.max(-H, Math.min(2*H, H/2 + focalScreen * Math.sin(pitch)));
+  // ── Sky (above horizon) ──
+  if (horizonY > 0) {
+    const sky = ctx.createLinearGradient(0,0,0,Math.max(1, horizonY));
+    sky.addColorStop(0,    '#1a2342');
+    sky.addColorStop(0.55, '#3a4a78');
+    sky.addColorStop(1,    '#6b7fb0');
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, horizonY);
+  }
+  // ── Sun — anchored to a world point, follows pitch automatically ──
   {
-    const horizonY = H/2;
-    // Project a point far ahead at horizon height
     const ahead = project(0, cam.y + 10000, TRACK.wallHeight * 4);
     if (ahead && ahead.fwd > NEAR) {
       const sunR = Math.min(60, W*0.06);
-      const sunGrd = ctx.createRadialGradient(ahead.x, horizonY - 10, 0, ahead.x, horizonY - 10, sunR*1.8);
+      const sx = ahead.x, sy = ahead.y;
+      const sunGrd = ctx.createRadialGradient(sx, sy, 0, sx, sy, sunR*1.8);
       sunGrd.addColorStop(0, 'rgba(255,220,140,0.9)');
       sunGrd.addColorStop(0.5, 'rgba(255,180,100,0.45)');
       sunGrd.addColorStop(1, 'rgba(255,160,80,0)');
       ctx.fillStyle = sunGrd;
-      ctx.beginPath(); ctx.arc(ahead.x, horizonY - 10, sunR*1.8, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy, sunR*1.8, 0, Math.PI*2); ctx.fill();
       ctx.fillStyle = '#ffe9b0';
-      ctx.beginPath(); ctx.arc(ahead.x, horizonY - 10, sunR*0.55, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy, sunR*0.55, 0, Math.PI*2); ctx.fill();
     }
   }
-  // ── Ground beyond walls (terrain) ──
-  const grd = ctx.createLinearGradient(0,H/2,0,H);
-  grd.addColorStop(0, '#2a3445');
-  grd.addColorStop(1, '#11161e');
-  ctx.fillStyle = grd; ctx.fillRect(0,H/2,W,H/2);
+  // ── Ground beyond walls (below horizon) ──
+  if (horizonY < H) {
+    const grd = ctx.createLinearGradient(0, horizonY, 0, H);
+    grd.addColorStop(0, '#2a3445');
+    grd.addColorStop(1, '#11161e');
+    ctx.fillStyle = grd; ctx.fillRect(0, horizonY, W, H - horizonY);
+  }
 
   const halfW = TRACK.width/2;
   // Render a symmetric range around the camera so looking backward shows
@@ -1072,17 +1080,19 @@ function renderFirstPerson(W, H) {
     for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
     ctx.closePath(); ctx.fill();
   }
-  // Lava — one big polygon at the lava plane, then a brighter overlay so the
-  // pulse is visible. Animates with tNow.
+  // Lava — rendered at the SAME z as the bottom of the pad slabs so there's
+  // no see-through gap between "pad bottom" and "lava surface". The death
+  // threshold (TRACK.lava_depth) stays deeper, so the player visibly sinks
+  // a bit before the restart triggers.
   {
-    const z = -TRACK.lava_depth;
+    const z = -TRACK.pad_thickness;
     const lavaProj = projPolygonClipped([
       [-halfW, yViewMin, z], [halfW, yViewMin, z],
       [halfW, yViewMax, z],  [-halfW, yViewMax, z],
     ]);
-    fillPoly(lavaProj, '#3a0a04');
-    // Pulse stripes — alternate brighter cells in 200-ups bands.
-    const pulse = (Math.sin(tNow * 1.5) + 1) * 0.5; // 0..1
+    fillPoly(lavaProj, '#b13409');
+    // Animated pulse stripes — alternating bright cells every 200 ups.
+    const pulse = (Math.sin(tNow * 1.5) + 1) * 0.5;
     for (let y = Math.floor(yViewMin/200)*200; y < yViewMax; y += 200) {
       const y1 = Math.max(yViewMin, y), y2 = Math.min(yViewMax, y + 200);
       if (((y/200) | 0) % 2 === 0) continue;
@@ -1090,9 +1100,9 @@ function renderFirstPerson(W, H) {
         [-halfW, y1, z], [halfW, y1, z],
         [halfW, y2, z],  [-halfW, y2, z],
       ]);
-      const r = Math.round(180 + 50*pulse);
-      const g = Math.round(40 + 20*pulse);
-      fillPoly(proj, `rgb(${r}, ${g}, 8)`);
+      const r = Math.round(220 + 30*pulse);
+      const g = Math.round(80 + 30*pulse);
+      fillPoly(proj, `rgb(${r}, ${g}, 18)`);
     }
   }
   // Each pad — bright top + visible front/back faces so depth reads.
