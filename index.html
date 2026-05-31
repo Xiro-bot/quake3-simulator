@@ -170,10 +170,10 @@
         </select>
       </label>
       <label>Bot1 pre-tilt (°CW)
-        <input type="number" id="tilt1" min="-15" max="15" step="0.125" value="6.125" style="width:70px;">
+        <input type="number" id="tilt1" min="-90" max="90" step="0.125" value="6.125" style="width:70px;">
       </label>
       <label>Bot2 pre-tilt (°CW)
-        <input type="number" id="tilt2" min="-30" max="30" step="0.125" value="16.375" style="width:70px;">
+        <input type="number" id="tilt2" min="-90" max="90" step="0.125" value="16.375" style="width:70px;">
       </label>
       <div style="display:flex; gap:6px; margin-top:6px">
         <button id="reset" style="flex:1">Reset</button>
@@ -600,7 +600,15 @@ $('mfilter').onchange    = e => { cfg.m_filter = +e.target.value; };
 $('fps').onchange = e => cfg.fps = +e.target.value;
 $('rate').onchange = e => cfg.rate = +e.target.value;
 $('botVis').onchange = e => cfg.botsVisible = e.target.value;
-$('phys').onchange = e => { cfg.physics = e.target.value; PHYS = PHYSICS[cfg.physics]; resetToStart(); };
+$('phys').onchange = e => {
+  cfg.physics = e.target.value;
+  PHYS = PHYSICS[cfg.physics];
+  // Swap to the calibrated pre-tilt for this physics mode and reflect it in the UI.
+  const calib = PRE_TILT_BY_PHYSICS[cfg.physics];
+  PRE_TILT_DEG.bot1 = calib.bot1; PRE_TILT_DEG.bot2 = calib.bot2;
+  $('tilt1').value = calib.bot1; $('tilt2').value = calib.bot2;
+  resetToStart();
+};
 $('tilt1').oninput = e => { PRE_TILT_DEG.bot1 = +e.target.value; resetToStart(); };
 $('tilt2').oninput = e => { PRE_TILT_DEG.bot2 = +e.target.value; resetToStart(); };
 $('specBtn').onclick = cycleCam;
@@ -615,9 +623,20 @@ function applyEntityIdentity(e, src) {
 // happen at lower V than the R jumps. Bot2's LLRR pattern lets the drift
 // accumulate twice before correcting, so it needs more pre-tilt.
 // Tunable from the UI; defaults below were picked by eye, not derived.
-// Empirically calibrated by Chiro 2026-05-31 on the default 30 000-ups track:
-// 6.125° / 16.375° cancel the cumulative LRLR / LLRR drift end-to-end.
-const PRE_TILT_DEG = { bot1: 6.125, bot2: 16.375 };
+// Per-physics pre-tilt calibration. CW (positive) tilts the spawn yaw
+// toward +x. Drift direction and magnitude differ wildly between VQ3 and
+// CPM (CPM aircontrol rotates velocity hard toward view direction every
+// frame, swinging the same LRLR pattern in the OPPOSITE direction and at
+// far larger amplitude).
+//   VQ3 — empirically calibrated by Chiro 2026-05-31.
+//   CPM — found by sweeping a headless port of step()/botStep() in Node
+//         over tilt ∈ [-90°, 90°] (see /tmp/cpm-tilt-search.js for the
+//         method); peak |x| during the run < 700 ups at these values.
+const PRE_TILT_BY_PHYSICS = {
+  vq3: { bot1:  6.125, bot2:  16.375 },
+  cpm: { bot1: -80.0,  bot2: -73.5  },
+};
+const PRE_TILT_DEG = { ...PRE_TILT_BY_PHYSICS.vq3 };
 
 function resetToStart() {
   // Preserve identity (label/color/strategy) across reset.
