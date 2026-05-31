@@ -281,6 +281,7 @@ const cfg = {
   sensitivity: 2.6,        // Chiro's q3config.cfg
   cl_mouseAccel: 0.2,      //
   m_yaw: 0.022,            // Q3 default, also Chiro's
+  m_pitch: -0.018,         // Chiro's (negative = standard FPS, not inverted)
   m_filter: 1,             // 1 = on (one-frame moving average)
   fps: 125,
   rate: 1,
@@ -293,7 +294,7 @@ const cfg = {
 function makeEntity(yaw) {
   return {
     x:0, y:0, z:0, vx:0, vy:0, vz:0,
-    yaw: yaw, onGround: true, justLanded: false, fell: false,
+    yaw: yaw, pitch: 0, onGround: true, justLanded: false, fell: false,
     lastTakeoffSpeed: 0, lastLandSpeed: 0, lastGain: 0,
     jumps: 0, strafeSide: 1, landCount: 0, cyclePhase: 0,
     trail: [],
@@ -493,6 +494,11 @@ function step(e, inputs, dt) {
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
+  // Walked off a pad → start falling. Don't change z yet; gravity will pull
+  // it down next frame.
+  if (e.onGround && !onPad(e.x, e.y)) {
+    e.onGround = false;
+  }
   // Track time + finish detection
   e.runTime += dt;
   if (e.finishTime == null && e.y >= TRACK.length) {
@@ -620,8 +626,14 @@ document.addEventListener('mousemove', e => {
   _prevMouseT = now;
   const rate = Math.sqrt(mx*mx + my*my) / frame_msec;
   const accelSens = cfg.sensitivity + rate * cfg.cl_mouseAccel;
-  const yawDeg = mx * accelSens * cfg.m_yaw;
-  me.yaw -= yawDeg * Math.PI / 180;
+  const yawDeg   = mx * accelSens * cfg.m_yaw;
+  const pitchDeg = my * accelSens * cfg.m_pitch;
+  me.yaw   -= yawDeg   * Math.PI / 180;
+  me.pitch -= pitchDeg * Math.PI / 180;
+  // Clamp pitch to just shy of straight up/down so the math doesn't blow up.
+  const pitchCap = Math.PI/2 - 0.05;
+  if (me.pitch > pitchCap)  me.pitch = pitchCap;
+  if (me.pitch < -pitchCap) me.pitch = -pitchCap;
 });
 document.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
@@ -854,18 +866,28 @@ function drawArrow(x1,y1,x2,y2,color,width=2,dashed=false) {
 // ─── Projection (first-person) — current viewport dims (set by caller) ───
 const NEAR = 1.0;
 let VP_W = 800, VP_H = 600;  // updated each render
+// camFwd: signed distance from the camera along the view-forward axis,
+// after applying yaw AND pitch. Re-used by project, projectLine, and the
+// polygon clipper so all near-plane tests stay consistent.
+function camFwd(wx, wy, wz) {
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+  const cp = Math.cos(cam.pitch || 0), sp = Math.sin(cam.pitch || 0);
+  return (wx - cam.x)*cy*cp + (wy - cam.y)*sy*cp + (wz - (cam.z + EYE_HEIGHT))*sp;
+}
 function project(wx, wy, wz) {
-  const dx = wx - cam.x, dy = wy - cam.y;
-  const fwd  = dx*Math.cos(cam.yaw) + dy*Math.sin(cam.yaw);
-  // Allow a tiny FP tolerance: a vertex clipped to exactly fwd=NEAR may come
-  // back as NEAR − epsilon after re-evaluating the dot product through float
-  // round-off; if we reject those, every clipped wall vertex randomly drops
-  // and the wall flickers between filled and empty as the camera moves.
+  const dx = wx - cam.x, dy = wy - cam.y, dz = wz - (cam.z + EYE_HEIGHT);
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+  const cp = Math.cos(cam.pitch || 0), sp = Math.sin(cam.pitch || 0);
+  // Camera basis (orthonormal):
+  //   forward = (cy*cp,  sy*cp,  sp)
+  //   right   = (sy,    -cy,     0)
+  //   up      = (-cy*sp,-sy*sp,  cp)
+  const fwd   = dx*cy*cp + dy*sy*cp + dz*sp;
   if (fwd < NEAR - 1e-4) return null;
-  const right = dx*Math.sin(cam.yaw) - dy*Math.cos(cam.yaw);
-  const dz = wz - (cam.z + EYE_HEIGHT);
+  const right = dx*sy - dy*cy;
+  const up    = -dx*cy*sp - dy*sy*sp + dz*cp;
   const focal = (VP_W/2) / Math.tan(FOV_DEG/2 * Math.PI/180);
-  return { x: VP_W/2 + focal*right/fwd, y: VP_H/2 - focal*dz/fwd, fwd, focal };
+  return { x: VP_W/2 + focal*right/fwd, y: VP_H/2 - focal*up/fwd, fwd, focal };
 }
 // Sutherland-Hodgman: clip a screen-space polygon against the canvas
 // viewport. Necessary because clipped near-plane vertices can project to
@@ -904,11 +926,10 @@ function clipPolyToViewport(pts) {
 // each edge, keep in-front vertices, insert an intersection where an edge
 // crosses the plane.
 function projPolygonClipped(corners) {
-  const c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
   const n = corners.length;
   const fwds = new Array(n);
   for (let i = 0; i < n; i++) {
-    fwds[i] = (corners[i][0] - cam.x) * c + (corners[i][1] - cam.y) * s;
+    fwds[i] = camFwd(corners[i][0], corners[i][1], corners[i][2]);
   }
   const out = [];
   for (let i = 0; i < n; i++) {
@@ -934,9 +955,8 @@ function projPolygonClipped(corners) {
 }
 
 function projectLine(x1,y1,z1,x2,y2,z2) {
-  const c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
-  const f1 = (x1 - cam.x)*c + (y1 - cam.y)*s;
-  const f2 = (x2 - cam.x)*c + (y2 - cam.y)*s;
+  const f1 = camFwd(x1, y1, z1);
+  const f2 = camFwd(x2, y2, z2);
   if (f1 < NEAR && f2 < NEAR) return null;
   let X1=x1,Y1=y1,Z1=z1,X2=x2,Y2=y2,Z2=z2;
   if (f1 < NEAR) { const t = (NEAR - f1)/(f2 - f1); X1=x1+t*(x2-x1); Y1=y1+t*(y2-y1); Z1=z1+t*(z2-z1); }
