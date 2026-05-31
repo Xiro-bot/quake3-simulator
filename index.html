@@ -1,0 +1,1663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Strafe-Jump Trainer — Q3 / Defrag</title>
+<style>
+  :root {
+    --bg:#0a0d12; --panel:#161b22; --ink:#e6edf3; --dim:#8b949e;
+    --blue:#58a6ff; --green:#56d364; --red:#f85149; --yellow:#d29922; --grid:#21262d;
+  }
+  * { box-sizing: border-box; }
+  html,body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--ink);
+              font: 13px/1.4 -apple-system, "SF Mono", Menlo, monospace; }
+  #wrap { display:grid; grid-template-columns: 1fr 340px; height:100vh; gap:8px; padding:8px; }
+  #left { position:relative; background:#000; border-radius:6px; overflow:hidden; }
+  #arena { display:block; width:100%; height:100%; cursor:crosshair; }
+  #prompt { position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); display:flex; flex-direction:column; align-items:center; justify-content:center;
+            background:rgba(0,0,0,0.78); color:var(--ink); font-size:15px; pointer-events:none; text-align:center; padding:18px 26px; border-radius:8px; border:1px solid var(--grid); max-width:560px; box-shadow:0 8px 30px rgba(0,0,0,0.5); }
+  #prompt.hidden { display:none; }
+  #prompt h2 { color:var(--blue); margin:0 0 12px; font-size:20px; }
+  #prompt kbd { background:#1c2128; padding:2px 7px; border-radius:3px; border:1px solid var(--grid); font-size:12px; margin:0 2px;}
+  #prompt .small { color:var(--dim); font-size:12px; margin-top:14px; max-width:520px; }
+  #right { display:flex; flex-direction:column; gap:8px; overflow-y:auto; }
+  .card { background:var(--panel); border:1px solid var(--grid); border-radius:6px; padding:10px 12px; }
+  .card h3 { font-size:11px; margin:0 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:0.06em; }
+  .speedo { font-size:38px; font-weight:bold; color:var(--blue); line-height:1; }
+  .speedo .u { font-size:13px; color:var(--dim); margin-left:6px; }
+  .row { display:flex; justify-content:space-between; padding:2px 0; }
+  .row .v { font-weight:bold; }
+  .bar { height:14px; background:#0a0d12; border:1px solid var(--grid); border-radius:3px; overflow:hidden; position:relative; margin:4px 0; }
+  .bar > .fill { height:100%; transition:width 80ms linear, background 200ms; }
+  .bar > .mid { position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--dim); }
+  .lesson { background:rgba(88,166,255,0.08); border-left:3px solid var(--blue); padding:8px 10px; border-radius:0 4px 4px 0;
+            font-size:12px; line-height:1.5; min-height:42px; }
+  .lesson b { color:var(--blue); }
+  .lesson.warn { background:rgba(248,81,73,0.08); border-color:var(--red); }
+  .lesson.warn b { color:var(--red); }
+  .lesson.good { background:rgba(86,211,100,0.08); border-color:var(--green); }
+  .lesson.good b { color:var(--green); }
+  select, input[type=range], button {
+    background:#0a0d12; color:var(--ink); border:1px solid var(--grid);
+    border-radius:3px; padding:3px 6px; font:inherit; }
+  button { cursor:pointer; }
+  button:hover { background:#1c2128; }
+  label { display:flex; justify-content:space-between; gap:8px; align-items:center; margin:3px 0; color:var(--dim); }
+  label input[type=range] { flex:1; }
+  #chart { display:block; width:100%; height:100px; background:#0a0d12; border-radius:3px; }
+  #legend { color:var(--dim); font-size:11px; display:flex; gap:10px; margin-top:5px; flex-wrap:wrap; }
+  #legend .sw { display:inline-block; width:11px; height:3px; vertical-align:middle; margin-right:4px; }
+  .keys { display:flex; gap:5px; margin-top:6px; }
+  .key { width:30px; height:30px; display:flex; align-items:center; justify-content:center;
+         border:1px solid var(--grid); border-radius:4px; font-weight:bold; background:#0a0d12; font-size:12px; }
+  .key.on { background:var(--blue); color:#000; border-color:var(--blue); }
+  .key.wide { width:auto; padding:0 12px; }
+  .lockstate { padding:3px 7px; border-radius:3px; background:#0a0d12; border:1px solid var(--grid); font-size:11px; color:var(--dim);}
+  .lockstate.on { color:var(--green); border-color:var(--green); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="left">
+    <canvas id="arena"></canvas>
+    <div id="debug" style="position:absolute; top:6px; left:6px; font:11px 'SF Mono',Menlo,monospace; color:#0ff; background:rgba(0,0,0,0.6); padding:3px 6px; border-radius:3px; z-index:10; pointer-events:none;">init…</div>
+    <div id="errorBar" style="position:absolute; top:30px; left:6px; right:6px; font:12px monospace; color:#fff; background:#d11; padding:6px 8px; border-radius:3px; z-index:10; display:none; white-space:pre-wrap;"></div>
+    <div id="prompt">
+      <h2>Strafe-Jump Trainer</h2>
+      <div><kbd>Click</kbd> this area to capture your mouse.</div>
+      <div style="margin-top:12px"><kbd>W</kbd>+<kbd>D</kbd> hold · <kbd>Space</kbd>/<kbd>right-click</kbd> jump (hold = auto-hop) · <kbd>R</kbd> reset · <kbd>Esc</kbd> release mouse</div>
+      <div class="small">First-person view down a corridor track. Chase the green <b>★</b> marker to gain max speed each frame. Two bots race alongside you: <b style="color:#56d364">Bot1</b> (switches strafe key every jump) and <b style="color:#f0883e">Bot2</b> (switches every 2 jumps). Press <kbd>V</kbd> to cycle the view through you → bot1 → bot2. Reach the finish line first.</div>
+    </div>
+  </div>
+  <div id="right">
+    <div class="card">
+      <h3>Speeds</h3>
+      <div class="speedo"><span id="speed">0</span><span class="u">ups (you)</span></div>
+      <div class="row"><span>State</span><span class="v" id="state">GROUND</span></div>
+      <div class="row"><span>Bot 1 (every jump)</span><span class="v" id="bot1Speed" style="color:var(--green)">0</span></div>
+      <div class="row"><span>Bot 2 (every 2 jumps)</span><span class="v" id="bot2Speed" style="color:#f0883e">0</span></div>
+      <div class="row"><span>Forward speed · you</span><span class="v" id="fwdMe">0</span></div>
+      <div class="row"><span>Forward · bot1 / bot2</span><span class="v" id="fwdBots">0 / 0</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Where to point (vs. velocity)</h3>
+      <div class="row"><span>★ Optimal view</span><span class="v" id="optOff" style="color:var(--green)">—</span></div>
+      <div class="row"><span>Your view</span><span class="v" id="yourOff">—</span></div>
+      <div class="row"><span>Error</span><span class="v" id="offErr">—</span></div>
+      <div style="color:var(--dim); font-size:11px; margin-top:4px; line-height:1.4">
+        With <b>W+D</b>: optimal view = 45° − θ* from velocity. At 320 ups ≈ <b>38° LEFT</b>, at 450 ≈ <b>straight ahead</b>, at 600 ≈ <b>13° RIGHT</b>, at 1000 ≈ <b>26° RIGHT</b>. Chase the green ★ arrow.
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Turn rate (the only thing that matters in air)</h3>
+      <div class="bar"><div class="mid"></div><div class="fill" id="rateBar" style="background:var(--dim); width:50%"></div></div>
+      <div class="row" style="font-size:11px"><span style="color:var(--dim)">too slow ←</span><span style="color:var(--dim)">optimal</span><span style="color:var(--dim)">→ too fast</span></div>
+      <div class="lesson" id="lesson"><b>Click the canvas</b> to begin. Capture mouse, then hold <kbd>W</kbd>+<kbd>D</kbd> and <kbd>Space</kbd>.</div>
+    </div>
+
+    <div class="card">
+      <h3>Per-jump gain</h3>
+      <div class="row"><span>You · last Δ</span><span class="v" id="lastGain">+0</span></div>
+      <div class="row"><span>Bot1 · last Δ</span><span class="v" id="bot1LastGain" style="color:var(--green)">+0</span></div>
+      <div class="row"><span>Bot2 · last Δ</span><span class="v" id="bot2LastGain" style="color:#f0883e">+0</span></div>
+      <div class="row"><span>Jumps this run</span><span class="v" id="jumpCount">0</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Speed history (last 15s) — solid = forward (+y) · dashed = total |v|</h3>
+      <canvas id="chart" width="650" height="100"></canvas>
+      <div id="legend">
+        <span><i class="sw" style="background:var(--blue)"></i>you</span>
+        <span><i class="sw" style="background:var(--green)"></i>bot1 (A/D every jump)</span>
+        <span><i class="sw" style="background:#f0883e"></i>bot2 (A/D every 2 jumps)</span>
+        <span><i class="sw" style="background:var(--yellow)"></i>g_speed (320)</span>
+      </div>
+      <div style="color:var(--dim); font-size:11px; margin-top:5px; line-height:1.4">
+        Total |v| overlaps between bots (same θ* air-strafe). Forward (+y) speed diverges — that's what wins the race. Bot2's sideways excursions cost it forward progress.
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Controls</h3>
+      <div class="keys">
+        <div class="key" id="kW">W</div>
+        <div class="key" id="kA">A</div>
+        <div class="key" id="kS">S</div>
+        <div class="key" id="kD">D</div>
+        <div class="key wide" id="kSpace">Space</div>
+        <span class="lockstate" id="lockUI">mouse free</span>
+      </div>
+      <label>sensitivity
+        <input type="number" id="sensitivity" min="0.1" max="20" step="0.1" value="2.6" style="width:70px;">
+      </label>
+      <label>cl_mouseAccel
+        <input type="number" id="mouseAccel" min="0" max="2" step="0.05" value="0.2" style="width:70px;">
+      </label>
+      <label>m_yaw
+        <input type="number" id="myaw" min="0.005" max="0.05" step="0.001" value="0.022" style="width:70px;">
+      </label>
+      <label>m_filter
+        <select id="mfilter">
+          <option value="1" selected>1 (on)</option>
+          <option value="0">0 (off)</option>
+        </select>
+      </label>
+      <label>com_maxfps
+        <select id="fps">
+          <option>76</option><option selected>125</option><option>250</option><option>333</option>
+        </select>
+      </label>
+      <label>Speed multiplier
+        <select id="rate">
+          <option value="1">1.0× real-time</option>
+          <option value="0.5">0.5× slow-mo</option>
+          <option value="0.25">0.25× slow-mo</option>
+          <option value="0.1">0.1× crawl</option>
+        </select>
+      </label>
+      <label>Physics
+        <select id="phys">
+          <option value="vq3" selected>VQ3 (vanilla Q3)</option>
+          <option value="cpm">CPM (CPMA)</option>
+        </select>
+      </label>
+      <label>Bots
+        <select id="botVis">
+          <option value="1" selected>both visible</option>
+          <option value="0">hidden</option>
+        </select>
+      </label>
+      <label>Bot1 pre-tilt (°CW)
+        <input type="number" id="tilt1" min="-15" max="15" step="0.125" value="6.125" style="width:70px;">
+      </label>
+      <label>Bot2 pre-tilt (°CW)
+        <input type="number" id="tilt2" min="-30" max="30" step="0.125" value="16.375" style="width:70px;">
+      </label>
+      <div style="display:flex; gap:6px; margin-top:6px">
+        <button id="reset" style="flex:1">Reset</button>
+        <button id="kick" style="flex:1">Kick all to 320</button>
+        <button id="kickCJ" style="flex:1">Kick all to CJ (390)</button>
+      </div>
+      <div style="display:flex; gap:6px; margin-top:6px">
+        <button id="specBtn" style="flex:1">Cycle view: me → bot1 → bot2 (V)</button>
+      </div>
+      <div class="row" style="margin-top:6px"><span>Session peak</span><span class="v" id="peakSpeed" style="color:var(--green)">0</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Race to finish (30 000 ups)</h3>
+      <div class="row"><span>Bot 1 (every jump)</span><span class="v" id="bot1Race" style="color:var(--green)">running…</span></div>
+      <div class="row"><span>Bot 2 (every 2 jumps)</span><span class="v" id="bot2Race" style="color:#f0883e">running…</span></div>
+      <div class="row"><span>You</span><span class="v" id="meRace">running…</span></div>
+      <div class="row"><span>Progress (b1 / b2 / you)</span><span class="v" id="allProgress">0% / 0% / 0%</span></div>
+      <div style="color:var(--dim); font-size:11px; margin-top:6px; line-height:1.4">
+        Both bots strafe at the optimal max-speed angle θ* each frame; they differ ONLY in which strafe key they hold.
+        <b style="color:#56d364">Bot 1</b>: <code>A, D, A, D, A, D, …</code> (flip every jump).
+        <b style="color:#f0883e">Bot 2</b>: <code>A, A, D, D, A, A, D, D, …</code> (flip every 2 jumps).
+        Same physics, fixed patterns — watch how the trajectories diverge and which one finishes first. R resets all timers.
+    </div>
+
+    <div class="card">
+      <h3>What you're watching</h3>
+      <div style="color:var(--dim); font-size:12px; line-height:1.5">
+        <b style="color:var(--red)">Red</b> = velocity. <b style="color:#fff">White</b> = view. <b style="color:var(--green)">Green</b> = optimal wishdir (★ = max-speed).<br><br>
+        On every air frame, the engine adds speed only if your velocity's projection onto wishdir is < <b>wishspeed (320)</b>. Optimal angle is <b>θ* = acos((320 − Δ)/V)</b> from velocity. But the <i>side</i> you strafe also curls velocity — alternating L/R every jump keeps it pointed at the finish; staying on one side too long sends you sideways.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+// ───── DOM ─────
+const arena = document.getElementById('arena');
+const ctx = arena.getContext('2d');
+const chart = document.getElementById('chart');
+const cctx = chart.getContext('2d');
+const $ = id => document.getElementById(id);
+function resizeArena() {
+  const r = arena.parentElement.getBoundingClientRect();
+  arena.width = r.width; arena.height = r.height;
+}
+resizeArena();
+window.addEventListener('resize', resizeArena);
+
+// ───── Physics profiles ─────
+// VQ3 = stock Q3 / defrag VQ3 mode.
+// CPM = CPMA / defrag CPM mode. Adds airstop, strafe-only accel, and air
+// control (velocity rotates toward view direction when forward is held).
+const PHYSICS = {
+  vq3: {
+    name: 'VQ3', gSpeed: 320,
+    pm_friction: 6, pm_stopspeed: 100,
+    pm_accelerate: 10, pm_airaccelerate: 1,
+    pm_airstopaccelerate: 0, pm_aircontrol: 0,
+    pm_strafeaccelerate: 0,  pm_wishspeed: 0,
+    jumpVelocity: 270, gravity: 800,
+  },
+  cpm: {
+    name: 'CPM', gSpeed: 320,
+    pm_friction: 8, pm_stopspeed: 100,
+    pm_accelerate: 15, pm_airaccelerate: 1,
+    pm_airstopaccelerate: 2.5, pm_aircontrol: 150,
+    pm_strafeaccelerate: 70,   pm_wishspeed: 30,
+    jumpVelocity: 270, gravity: 800,
+  },
+};
+let PHYS = PHYSICS.vq3;
+
+// ───── Track + camera ─────
+const TRACK = {
+  width: 600,           // corridor width (ups)
+  length: 30000,        // run length (ups) — long enough to see speeds > 2000
+  wallHeight: 120,
+  startY: 0,
+  markerStep: 500,      // distance line every 500 ups
+};
+const EYE_HEIGHT = 26;  // Q3 player view height when standing
+const FOV_DEG = 110;    // defrag-typical horizontal FOV
+
+// ───── Cfg ─────
+// Mouse model mirrors Q3 vanilla (cl_mouseAccelStyle 0):
+//   rate          = sqrt(mx² + my²) / frame_msec
+//   accelSens     = sensitivity + rate * cl_mouseAccel
+//   yaw_delta_deg = -mx * accelSens * m_yaw
+// m_filter (1-frame smoothing) is also applied — averages the current and
+// previous raw delta before the formula.
+const cfg = {
+  sensitivity: 2.6,        // Chiro's q3config.cfg
+  cl_mouseAccel: 0.2,      //
+  m_yaw: 0.022,            // Q3 default, also Chiro's
+  m_filter: 1,             // 1 = on (one-frame moving average)
+  fps: 125,
+  rate: 1,
+  botsVisible: '1',
+  view: 'fp',
+  physics: 'vq3',          // 'vq3' or 'cpm' — selects PHYSICS profile
+};
+
+// ───── State ─────
+function makeEntity(yaw) {
+  return {
+    x:0, y:0, z:0, vx:0, vy:0, vz:0,
+    yaw: yaw, onGround: true, justLanded: false,
+    lastTakeoffSpeed: 0, lastLandSpeed: 0, lastGain: 0,
+    jumps: 0, strafeSide: 1, landCount: 0, cyclePhase: 0,
+    trail: [],
+    jumpLog: [],                 // [{n, takeoff, land, gain}]
+    currentInputs: {fm:0, sm:0, jump:false},
+    runTime: 0, finishTime: null, finishSpeed: 0,
+    // labels (set by callers)
+    label: '', color: '#fff', strategy: null,
+  };
+}
+const me = makeEntity(Math.PI/2);
+me.label = 'you'; me.color = '#58a6ff';
+
+// Bot 1 — flips strafe side every landing  (pattern: A, D, A, D, …)
+const bot1 = makeEntity(Math.PI/2);
+bot1.label = 'bot1'; bot1.color = '#56d364'; bot1.strategy = 'alt1';
+
+// Bot 2 — flips strafe side every 2 landings  (pattern: A, A, D, D, A, A, …)
+const bot2 = makeEntity(Math.PI/2);
+bot2.label = 'bot2'; bot2.color = '#f0883e'; bot2.strategy = 'alt2';
+
+const bots = [bot1, bot2];
+
+let cam = me;   // which entity the camera follows (cycle with V or button)
+const camCycle = [me, bot1, bot2];
+function setCam(target) {
+  cam = target;
+  // Spectating a bot: clear player input so 'me' stops moving in the background.
+  if (cam !== me) {
+    keys.w = keys.a = keys.s = keys.d = keys.space = false;
+    if (typeof updateKeyUI === 'function') updateKeyUI();
+  }
+  const btn = document.getElementById('specBtn');
+  if (btn) {
+    const next = camCycle[(camCycle.indexOf(cam) + 1) % camCycle.length];
+    btn.textContent = `View: ${cam.label} → ${next.label} (V)`;
+  }
+}
+function cycleCam() {
+  const i = camCycle.indexOf(cam);
+  setCam(camCycle[(i + 1) % camCycle.length]);
+}
+
+const keys = { w:false, a:false, s:false, d:false, space:false };
+let yawRateHistory = []; // {t, rate}
+let lastYawForRate = me.yaw;
+let speedHist = []; // {t, me, bot}
+let tNow = 0;
+let lessonState = '';
+
+// ───── Physics functions ─────
+function computeWish(yaw, fm, sm, gSpeed) {
+  if (fm === 0 && sm === 0) return null;
+  const fx = Math.cos(yaw), fy = Math.sin(yaw);
+  const rx = Math.sin(yaw), ry = -Math.cos(yaw);
+  const mx = Math.max(Math.abs(fm), Math.abs(sm));
+  const total = Math.hypot(fm, sm);
+  const scale = gSpeed * mx / (127 * total);
+  const wx = fx*fm*scale + rx*sm*scale;
+  const wy = fy*fm*scale + ry*sm*scale;
+  const s = Math.hypot(wx, wy);
+  return { dx: wx/s, dy: wy/s, speed: s };
+}
+function applyAccel(e, wish, accel, dt) {
+  if (!wish) return 0;
+  const cur = e.vx*wish.dx + e.vy*wish.dy;
+  const add = wish.speed - cur;
+  if (add <= 0) return 0;
+  let a = accel * dt * wish.speed;
+  if (a > add) a = add;
+  const before = Math.hypot(e.vx, e.vy);
+  e.vx += a * wish.dx; e.vy += a * wish.dy;
+  return Math.hypot(e.vx, e.vy) - before;
+}
+function friction(e, dt) {
+  if (!e.onGround) return;
+  const s = Math.hypot(e.vx, e.vy);
+  if (s < 1) { e.vx = 0; e.vy = 0; return; }
+  const control = Math.max(s, PHYS.pm_stopspeed);
+  const drop = control * PHYS.pm_friction * dt;
+  const ns = Math.max(0, s - drop);
+  e.vx *= ns/s; e.vy *= ns/s;
+}
+function step(e, inputs, dt) {
+  e.justLanded = false;
+  e.currentInputs = inputs;
+  if (e.onGround) {
+    // Mirror Q3 pmove order: PM_CheckJump runs BEFORE PM_WalkMove/PM_AirMove.
+    // If jumping this frame, groundEntityNum is cleared and PM_AirMove runs —
+    // PM_Friction is never called. Skipping friction on the jump frame is the
+    // mechanism behind frame-perfect bunny-hop / strafe-jump speed retention.
+    if (inputs.jump) {
+      e.vz = PHYS.jumpVelocity;
+      e.onGround = false;
+      e.z = 0.001;
+      e.lastTakeoffSpeed = Math.hypot(e.vx, e.vy);
+      e.jumps += 1;
+      e.jumpLog.push({n: e.jumps, takeoff: e.lastTakeoffSpeed, land: null, gain: null});
+      if (e.jumpLog.length > 18) e.jumpLog.shift();
+    } else {
+      friction(e, dt);
+    }
+  }
+  const wish = computeWish(e.yaw, inputs.fm, inputs.sm, PHYS.gSpeed);
+
+  // Acceleration selection mirrors bg_pmove.c's PM_AirMove (vanilla)
+  // vs CPMA's PM_CPMAirMove (CPM):
+  //   - VQ3 air: always pm_airaccelerate, full wishspeed.
+  //   - CPM air, wishdir opposes velocity:   pm_airstopaccelerate (brake).
+  //   - CPM air, pure strafe (W=0, A/D held): pm_strafeaccelerate, wishspeed
+  //     capped at pm_wishspeed (=30). This is what enables CPM "snake".
+  //   - CPM air, holding W: aircontrol kicks in AFTER PM_Accelerate, rotating
+  //     velocity toward the view direction.
+  let accel = e.onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
+  let effWish = wish;
+  const isCPMair = !e.onGround && PHYS.pm_aircontrol > 0;
+  if (isCPMair && wish) {
+    const dot = e.vx*wish.dx + e.vy*wish.dy;
+    if (dot < 0) accel = PHYS.pm_airstopaccelerate;
+    if (inputs.fm === 0 && inputs.sm !== 0) {
+      const cappedSpeed = Math.min(wish.speed, PHYS.pm_wishspeed);
+      effWish = { dx: wish.dx, dy: wish.dy, speed: cappedSpeed };
+      accel = PHYS.pm_strafeaccelerate;
+    }
+  }
+  applyAccel(e, effWish, accel, dt);
+
+  // CPM Air Control — rotate velocity toward view-forward when W is held.
+  // Lifted from CPMA PM_AirControl: k = 32 * pm_aircontrol * dot² * dt,
+  // velocity_new = (velocity_dir * speed) + (forward * k), then renormalize
+  // back to original speed magnitude. Skipped if forward isn't held.
+  if (isCPMair && inputs.fm !== 0) {
+    const fx = Math.cos(e.yaw), fy = Math.sin(e.yaw);
+    const speed = Math.hypot(e.vx, e.vy);
+    if (speed > 0.1) {
+      const vnx = e.vx / speed, vny = e.vy / speed;
+      const dotv = vnx*fx + vny*fy;
+      if (dotv > 0) {
+        const k = 32 * PHYS.pm_aircontrol * dotv * dotv * dt;
+        let nx = vnx*speed + fx*k;
+        let ny = vny*speed + fy*k;
+        const nm = Math.hypot(nx, ny);
+        if (nm > 1e-3) {
+          e.vx = (nx / nm) * speed;
+          e.vy = (ny / nm) * speed;
+        }
+      }
+    }
+  }
+  if (!e.onGround) {
+    e.vz -= PHYS.gravity * dt;
+    e.z += e.vz * dt;
+    if (e.z <= 0 && e.vz <= 0) {
+      e.z = 0; e.vz = 0;
+      e.onGround = true; e.justLanded = true;
+      e.lastLandSpeed = Math.hypot(e.vx, e.vy);
+      e.lastGain = e.lastLandSpeed - e.lastTakeoffSpeed;
+      const lastLog = e.jumpLog[e.jumpLog.length - 1];
+      if (lastLog) { lastLog.land = e.lastLandSpeed; lastLog.gain = e.lastGain; }
+    }
+  }
+  e.x += e.vx * dt; e.y += e.vy * dt;
+  // Track time + finish detection
+  e.runTime += dt;
+  if (e.finishTime == null && e.y >= TRACK.length) {
+    e.finishTime = e.runTime;
+    e.finishSpeed = Math.hypot(e.vx, e.vy);
+  }
+}
+
+// ───── Bot brain (STRICT-PATTERN strafe-jumper) ─────
+//
+// Both bots execute a fixed alternation pattern of strafe-key inputs.
+//   alt1  →  A, D, A, D, A, D, …       (flip every landing)
+//   alt2  →  A, A, D, D, A, A, D, D, … (flip every 2 landings)
+//
+// NO drift correction — the strafe pattern IS the experimental variable.
+// Whatever trajectory it produces is what we observe; if bot2 drifts off the
+// track axis, that's the point (same total air-strafe accel, worse forward
+// projection).
+//
+// In air: view yaw is set so wishdir sits at the optimal max-speed angle θ*
+// from velocity, on whatever side the pattern dictates.
+// On ground: don't override yaw — air-strafe physics left it close to velocity
+// direction, and the next frame jumps again anyway.
+
+function botStep(b, dt) {
+  // ── Finished? Freeze at the line, don't keep simulating. ──
+  if (b.finishTime != null) {
+    b.vx = 0; b.vy = 0; b.vz = 0;
+    if (b.y > TRACK.length) b.y = TRACK.length;
+    b.onGround = true; b.justLanded = false;
+    b.currentInputs = { fm: 0, sm: 0, jump: false };
+    return;
+  }
+  // ── Strafe-side selection: STRICT PATTERN, no drift correction ──
+  if (b.justLanded) {
+    b.landCount += 1;
+    if (b.strategy === 'alt1') {
+      // Flip every landing  →  A, D, A, D, …
+      b.strafeSide *= -1;
+    } else if (b.strategy === 'alt2') {
+      // Flip every 2 landings  →  A, A, D, D, A, A, …
+      if (b.landCount % 2 === 0) b.strafeSide *= -1;
+    }
+  }
+
+  // ── Input model ──
+  // Pre-first-jump: bot is building speed on the ground from rest. Hold W only
+  // (no strafe) so accel is pure +y. Jump as soon as V > ~295.
+  // After first jump: simulate the real player holding W + strafe-key + space
+  // CONTINUOUSLY. On the rejump frame this matters: Q3's PM_CheckJump clears
+  // groundEntityNum, so PM_AirMove runs that frame with full strafe accel —
+  // skipping it (sm=0 on ground branch) misses one frame of air gain per cycle.
+  const Vmag = Math.hypot(b.vx, b.vy);
+  const inAutoHop = b.jumps > 0 || Vmag > 295;
+
+  let inputs;
+  if (!inAutoHop) {
+    inputs = { fm: 127, sm: 0, jump: false };
+  } else {
+    inputs = {
+      fm: 127,
+      sm: 127 * b.strafeSide,
+      jump: b.onGround,             // jump every ground frame (auto-hop)
+    };
+    // Optimal max-speed air-strafe yaw — applies whether the bot is mid-air
+    // or about to take off this frame (the post-jump air-accel uses this yaw).
+    if (Vmag > 1) {
+      const wishspeed = PHYS.gSpeed;
+      const Delta = PHYS.pm_airaccelerate * dt * wishspeed;
+      const cosT = (wishspeed - Delta) / Vmag;
+      const theta = cosT >= 1 ? 0 : Math.acos(Math.max(-1, cosT));
+      const velAng = Math.atan2(b.vy, b.vx);
+      const side = b.strafeSide;     // +1 right (D), -1 left (A)
+      const wishAng = velAng + (-side) * theta;
+      const wishOffset = Math.atan2(-inputs.sm, inputs.fm);
+      b.yaw = wishAng - wishOffset;
+    }
+  }
+
+  step(b, inputs, dt);
+}
+
+// ───── Input ─────
+arena.addEventListener('click', () => {
+  if (!document.pointerLockElement) arena.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === arena;
+  $('prompt').classList.toggle('hidden', locked);
+  $('lockUI').textContent = locked ? 'mouse locked' : 'mouse free';
+  $('lockUI').classList.toggle('on', locked);
+});
+// Mouse input — Q3 vanilla formula (cl_mouseAccelStyle 0) + optional 1-frame
+// m_filter smoothing. frame_msec is taken from the time since the previous
+// mousemove event (clamped to a reasonable range so quick double-events don't
+// blow up the rate).
+let _prevMouseDx = 0, _prevMouseDy = 0, _prevMouseT = 0;
+document.addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== arena) return;
+  let mx = e.movementX, my = e.movementY;
+  if (cfg.m_filter) {
+    mx = (mx + _prevMouseDx) * 0.5;
+    my = (my + _prevMouseDy) * 0.5;
+    _prevMouseDx = e.movementX; _prevMouseDy = e.movementY;
+  }
+  const now = performance.now();
+  const frame_msec = Math.min(50, Math.max(1, _prevMouseT ? (now - _prevMouseT) : 8));
+  _prevMouseT = now;
+  const rate = Math.sqrt(mx*mx + my*my) / frame_msec;
+  const accelSens = cfg.sensitivity + rate * cfg.cl_mouseAccel;
+  const yawDeg = mx * accelSens * cfg.m_yaw;
+  me.yaw -= yawDeg * Math.PI / 180;
+});
+document.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === ' ') { keys.space = true; updateKeyUI(); e.preventDefault(); return; }
+  if (k === 'r') { resetToStart(); e.preventDefault(); return; }
+  if (k === 'v') { cycleCam(); e.preventDefault(); return; }
+  if (k in keys) { keys[k] = true; updateKeyUI(); e.preventDefault(); }
+});
+document.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (k === ' ') { keys.space = false; updateKeyUI(); e.preventDefault(); return; }
+  if (k in keys) { keys[k] = false; updateKeyUI(); e.preventDefault(); }
+});
+// Right-click also jumps (only when pointer-locked, so it doesn't fight the page elsewhere).
+arena.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('mousedown', e => {
+  if (e.button === 2 && document.pointerLockElement === arena) {
+    keys.space = true; updateKeyUI(); e.preventDefault();
+  }
+});
+document.addEventListener('mouseup', e => {
+  if (e.button === 2 && document.pointerLockElement === arena) {
+    keys.space = false; updateKeyUI(); e.preventDefault();
+  }
+});
+function updateKeyUI() {
+  $('kW').classList.toggle('on', keys.w);
+  $('kA').classList.toggle('on', keys.a);
+  $('kS').classList.toggle('on', keys.s);
+  $('kD').classList.toggle('on', keys.d);
+  $('kSpace').classList.toggle('on', keys.space);
+}
+
+// ───── Settings wiring ─────
+$('sensitivity').oninput = e => { cfg.sensitivity = +e.target.value; };
+$('mouseAccel').oninput  = e => { cfg.cl_mouseAccel = +e.target.value; };
+$('myaw').oninput        = e => { cfg.m_yaw = +e.target.value; };
+$('mfilter').onchange    = e => { cfg.m_filter = +e.target.value; };
+$('fps').onchange = e => cfg.fps = +e.target.value;
+$('rate').onchange = e => cfg.rate = +e.target.value;
+$('botVis').onchange = e => cfg.botsVisible = e.target.value;
+$('phys').onchange = e => { cfg.physics = e.target.value; PHYS = PHYSICS[cfg.physics]; resetToStart(); };
+$('tilt1').oninput = e => { PRE_TILT_DEG.bot1 = +e.target.value; resetToStart(); };
+$('tilt2').oninput = e => { PRE_TILT_DEG.bot2 = +e.target.value; resetToStart(); };
+$('specBtn').onclick = cycleCam;
+
+function applyEntityIdentity(e, src) {
+  e.label = src.label; e.color = src.color; e.strategy = src.strategy;
+}
+
+// Spawn-yaw pre-tilt (degrees CW from +y, i.e. tilted toward +x).
+// Compensates the leftward drift the strict L/R/L/R (or L/L/R/R) pattern
+// accumulates because curl-per-jump is V-dependent and the L jumps tend to
+// happen at lower V than the R jumps. Bot2's LLRR pattern lets the drift
+// accumulate twice before correcting, so it needs more pre-tilt.
+// Tunable from the UI; defaults below were picked by eye, not derived.
+// Empirically calibrated by Chiro 2026-05-31 on the default 30 000-ups track:
+// 6.125° / 16.375° cancel the cumulative LRLR / LLRR drift end-to-end.
+const PRE_TILT_DEG = { bot1: 6.125, bot2: 16.375 };
+
+function resetToStart() {
+  // Preserve identity (label/color/strategy) across reset.
+  const meLabel = {label: me.label, color: me.color, strategy: me.strategy};
+  const b1Label = {label: bot1.label, color: bot1.color, strategy: bot1.strategy};
+  const b2Label = {label: bot2.label, color: bot2.color, strategy: bot2.strategy};
+  Object.assign(me,   makeEntity(Math.PI/2));
+  Object.assign(bot1, makeEntity(Math.PI/2));
+  Object.assign(bot2, makeEntity(Math.PI/2));
+  applyEntityIdentity(me,   meLabel);
+  applyEntityIdentity(bot1, b1Label);
+  applyEntityIdentity(bot2, b2Label);
+  // Side-by-side at the same Y as the player. Pre-tilt yaw rightward to
+  // compensate for the asymmetric leftward curl of the strict L/R patterns.
+  //   Bot1 pattern: A → D → A → D → …  (LRLR)
+  //   Bot2 pattern: A → A → D → D → …  (LLRR)
+  // Both start the first strafed jump with A (side=-1).
+  const tiltRad = d => -d * Math.PI / 180;  // negative = CW from +y
+  me.x   = 0;    me.y   = 0;
+  bot1.x = -30;  bot1.y = 0;  bot1.strafeSide = -1;  bot1.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot1);
+  bot2.x = +30;  bot2.y = 0;  bot2.strafeSide = -1;  bot2.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot2);
+  speedHist.length = 0; yawRateHistory.length = 0;
+  sessionPeak = 0;
+  raceStarted = false;
+  // Refresh cam-button label
+  setCam(cam);
+}
+let sessionPeak = 0;
+// Race-start gate: bots wait at the spawn until the player presses jump
+// (first Space / right-click). Until then, all three race timers stay at 0.
+let raceStarted = false;
+$('reset').onclick = resetToStart;
+
+function kickEntityToSpeed(e, sp) {
+  e.vx = sp * Math.cos(e.yaw); e.vy = sp * Math.sin(e.yaw);
+}
+function kickToCJ(e) {
+  e.vx = 390 * Math.cos(e.yaw); e.vy = 390 * Math.sin(e.yaw);
+  e.vz = PHYS.jumpVelocity; e.onGround = false; e.z = 0.01;
+  e.lastTakeoffSpeed = 390; e.jumps += 1;
+  e.jumpLog.push({n: e.jumps, takeoff: 390, land: null, gain: null});
+  if (e.jumpLog.length > 18) e.jumpLog.shift();
+}
+$('kick').onclick = () => { kickEntityToSpeed(me, 320); kickEntityToSpeed(bot1, 320); kickEntityToSpeed(bot2, 320); };
+$('kickCJ').onclick = () => { kickToCJ(me); kickToCJ(bot1); kickToCJ(bot2); };
+resetToStart();
+
+// ───── Loop ─────
+let lastReal = performance.now();
+let acc = 0;
+let frameCount = 0;
+const dbg = document.getElementById('debug');
+const errBar = document.getElementById('errorBar');
+function showErr(msg) {
+  if (errBar) { errBar.textContent = msg; errBar.style.display = 'block'; }
+  console.error(msg);
+}
+window.addEventListener('error', e => showErr(`[onerror] ${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
+window.addEventListener('unhandledrejection', e => showErr(`[unhandled] ${e.reason}`));
+function frame() {
+  try {
+    // Sanity fill: bright magenta — if you ever see this, render() crashed before drawing anything.
+    ctx.fillStyle = '#ff00ff';
+    ctx.fillRect(0, 0, arena.width, arena.height);
+  } catch (e) { showErr('[init paint] ' + e.message); }
+  const now = performance.now();
+  let dtReal = (now - lastReal) / 1000;
+  lastReal = now;
+  if (dtReal > 0.1) dtReal = 0.1;
+  acc += dtReal * cfg.rate;
+  const simDt = 1 / cfg.fps;
+  while (acc >= simDt) {
+    // Player input from keys
+    const inputs = {
+      fm: (keys.w ? 127 : 0) + (keys.s ? -127 : 0),
+      sm: (keys.d ? 127 : 0) + (keys.a ? -127 : 0),
+      jump: keys.space,  // auto-hop while held
+    };
+    step(me, inputs, simDt);
+    // Bots wait at the spawn until you press jump. The instant you do, reset
+    // your race timer to 0 so all three start from the same t=0.
+    if (!raceStarted && me.jumps > 0) {
+      raceStarted = true;
+      me.runTime = 0;
+    }
+    if (raceStarted) {
+      for (const b of bots) botStep(b, simDt);
+    } else {
+      // Keep me's race timer pinned at 0 while we're still waiting.
+      me.runTime = 0;
+    }
+    // yaw rate tracking
+    let dyaw = me.yaw - lastYawForRate;
+    while (dyaw > Math.PI) dyaw -= 2*Math.PI;
+    while (dyaw < -Math.PI) dyaw += 2*Math.PI;
+    const rate = dyaw / simDt * 180/Math.PI; // deg/s
+    yawRateHistory.push({ t: tNow, rate });
+    while (yawRateHistory.length > 30) yawRateHistory.shift();
+    lastYawForRate = me.yaw;
+    // trails
+    for (const e of [me, bot1, bot2]) {
+      e.trail.push([e.x, e.y, e.z, e.onGround]);
+      if (e.trail.length > 1200) e.trail.shift();
+    }
+    // speed history — track BOTH total speed and forward (+y) component.
+    // Total speed overlaps between bots (same physics); forward speed is what
+    // actually wins the race and what diverges between strafe patterns.
+    const sMe = Math.hypot(me.vx, me.vy);
+    const sBot1 = Math.hypot(bot1.vx, bot1.vy);
+    const sBot2 = Math.hypot(bot2.vx, bot2.vy);
+    speedHist.push({
+      t: tNow,
+      me: sMe, bot1: sBot1, bot2: sBot2,
+      fwdMe: me.vy, fwdBot1: bot1.vy, fwdBot2: bot2.vy,
+    });
+    while (speedHist.length && speedHist[0].t < tNow - 15) speedHist.shift();
+    sessionPeak = Math.max(sessionPeak, sMe, sBot1, sBot2);
+    acc -= simDt;
+    tNow += simDt;
+  }
+  try { render(); } catch (e) { showErr('[render] ' + e.message + '\n' + (e.stack||'').split('\n').slice(0,3).join('\n')); }
+  try { updateHUD(); } catch (e) { showErr('[updateHUD] ' + e.message + '\n' + (e.stack||'').split('\n').slice(0,3).join('\n')); }
+  frameCount++;
+  if (dbg && (frameCount & 7) === 0) {
+    const Vme = Math.hypot(me.vx, me.vy).toFixed(0);
+    const Vb1 = Math.hypot(bot1.vx, bot1.vy).toFixed(0);
+    dbg.textContent = `[${PHYS.name}] frame ${frameCount} · canvas ${arena.width}×${arena.height} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v me/b1=${Vme}/${Vb1}`;
+  }
+  requestAnimationFrame(frame);
+}
+
+// ───── Render ─────
+function drawArrow(x1,y1,x2,y2,color,width=2,dashed=false) {
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
+  if (dashed) ctx.setLineDash([6,5]); else ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  ctx.setLineDash([]);
+  const a = Math.atan2(y2-y1, x2-x1), h = 10;
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - h*Math.cos(a - 0.4), y2 - h*Math.sin(a - 0.4));
+  ctx.lineTo(x2 - h*Math.cos(a + 0.4), y2 - h*Math.sin(a + 0.4));
+  ctx.closePath(); ctx.fill();
+}
+
+// ─── Projection (first-person) — current viewport dims (set by caller) ───
+const NEAR = 1.0;
+let VP_W = 800, VP_H = 600;  // updated each render
+function project(wx, wy, wz) {
+  const dx = wx - cam.x, dy = wy - cam.y;
+  const fwd  = dx*Math.cos(cam.yaw) + dy*Math.sin(cam.yaw);
+  // Allow a tiny FP tolerance: a vertex clipped to exactly fwd=NEAR may come
+  // back as NEAR − epsilon after re-evaluating the dot product through float
+  // round-off; if we reject those, every clipped wall vertex randomly drops
+  // and the wall flickers between filled and empty as the camera moves.
+  if (fwd < NEAR - 1e-4) return null;
+  const right = dx*Math.sin(cam.yaw) - dy*Math.cos(cam.yaw);
+  const dz = wz - (cam.z + EYE_HEIGHT);
+  const focal = (VP_W/2) / Math.tan(FOV_DEG/2 * Math.PI/180);
+  return { x: VP_W/2 + focal*right/fwd, y: VP_H/2 - focal*dz/fwd, fwd, focal };
+}
+// Sutherland-Hodgman: clip a screen-space polygon against the canvas
+// viewport. Necessary because clipped near-plane vertices can project to
+// extreme screen coords (focal*right/NEAR is enormous when right≈300 and
+// NEAR=1), and Safari's canvas occasionally drops fills with such coords.
+// Bringing all vertices inside the viewport keeps canvas's rasterizer happy.
+function clipPolyToViewport(pts) {
+  if (!pts || pts.length < 3) return pts || [];
+  function clipEdge(input, axis, value, keepSide) {
+    const out = [];
+    const n = input.length;
+    for (let i = 0; i < n; i++) {
+      const a = input[i], b = input[(i+1) % n];
+      const ac = axis === 'x' ? a.x : a.y;
+      const bc = axis === 'x' ? b.x : b.y;
+      const aIn = keepSide > 0 ? ac >= value : ac <= value;
+      const bIn = keepSide > 0 ? bc >= value : bc <= value;
+      if (aIn) out.push(a);
+      if (aIn !== bIn && Math.abs(bc - ac) > 1e-9) {
+        const t = (value - ac) / (bc - ac);
+        out.push({ x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) });
+      }
+    }
+    return out;
+  }
+  let r = pts;
+  r = clipEdge(r, 'x', 0,    +1);
+  r = clipEdge(r, 'x', VP_W, -1);
+  r = clipEdge(r, 'y', 0,    +1);
+  r = clipEdge(r, 'y', VP_H, -1);
+  return r;
+}
+
+// Clip a world-space polygon against the camera's near plane and project the
+// surviving vertices to screen. Sutherland-Hodgman for a single plane: walk
+// each edge, keep in-front vertices, insert an intersection where an edge
+// crosses the plane.
+function projPolygonClipped(corners) {
+  const c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
+  const n = corners.length;
+  const fwds = new Array(n);
+  for (let i = 0; i < n; i++) {
+    fwds[i] = (corners[i][0] - cam.x) * c + (corners[i][1] - cam.y) * s;
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const fa = fwds[i], fb = fwds[j];
+    const aIn = fa > NEAR;
+    const bIn = fb > NEAR;
+    if (aIn) {
+      const p = project(corners[i][0], corners[i][1], corners[i][2]);
+      if (p) out.push(p);
+    }
+    if (aIn !== bIn && Math.abs(fb - fa) > 1e-6) {
+      const t = (NEAR - fa) / (fb - fa);
+      const a = corners[i], b = corners[j];
+      const ix = a[0] + t * (b[0] - a[0]);
+      const iy = a[1] + t * (b[1] - a[1]);
+      const iz = a[2] + t * (b[2] - a[2]);
+      const p = project(ix, iy, iz);
+      if (p) out.push(p);
+    }
+  }
+  return out;
+}
+
+function projectLine(x1,y1,z1,x2,y2,z2) {
+  const c = Math.cos(cam.yaw), s = Math.sin(cam.yaw);
+  const f1 = (x1 - cam.x)*c + (y1 - cam.y)*s;
+  const f2 = (x2 - cam.x)*c + (y2 - cam.y)*s;
+  if (f1 < NEAR && f2 < NEAR) return null;
+  let X1=x1,Y1=y1,Z1=z1,X2=x2,Y2=y2,Z2=z2;
+  if (f1 < NEAR) { const t = (NEAR - f1)/(f2 - f1); X1=x1+t*(x2-x1); Y1=y1+t*(y2-y1); Z1=z1+t*(z2-z1); }
+  if (f2 < NEAR) { const t = (NEAR - f2)/(f1 - f2); X2=x2+t*(x1-x2); Y2=y2+t*(y1-y2); Z2=z2+t*(z1-z2); }
+  const a = project(X1,Y1,Z1), b = project(X2,Y2,Z2);
+  return (a && b) ? [a,b] : null;
+}
+
+// ─── Gaining-zone math (bounds + optimal in absolute world yaw) ───
+// Gain > 0 iff θ (wishdir-vs-velocity angle) ∈ ( acos(W/V), acos(-Δ/(2V)) )
+// Returns { yawMin, yawMax, yawOpt } in world frame, or null if undefined.
+function gainingZone() {
+  const fm = cam.currentInputs.fm, sm = cam.currentInputs.sm;
+  if (sm === 0) return null;
+  const wish = computeWish(cam.yaw, fm, sm, PHYS.gSpeed);
+  if (!wish) return null;
+  const V = Math.hypot(cam.vx, cam.vy);
+  if (V < 30) return null;
+  const accel = cam.onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
+  const Delta = accel * (1/cfg.fps) * wish.speed;
+  const W_ = wish.speed;
+  if (W_/V >= 1) return null; // can still accelerate at any angle including dead-ahead; no narrow zone
+  const thetaMin = Math.acos(W_/V);
+  const thetaMax = Math.acos(Math.max(-1, -Delta/(2*V)));
+  const cosOpt = (W_ - Delta) / V;
+  const thetaOpt = cosOpt >= 1 ? 0 : Math.acos(Math.max(-1, cosOpt));
+  const velAng = Math.atan2(cam.vy, cam.vx);
+  const side = sm > 0 ? -1 : +1;
+  const wishOffset = Math.atan2(-sm, fm);
+  return {
+    yawMin: velAng + side*thetaMin - wishOffset,  // edge nearest velocity (sharpest gain boundary)
+    yawMax: velAng + side*thetaMax - wishOffset,  // edge furthest from velocity (perpendicular-ish, also stops gaining past here)
+    yawOpt: velAng + side*thetaOpt - wishOffset,
+    velAng, V, thetaOpt, thetaMin, thetaMax, side,
+  };
+}
+function strokeLine(a, b, color, width=1.5, dashed=false) {
+  ctx.strokeStyle = color; ctx.lineWidth = width;
+  if (dashed) ctx.setLineDash([6,5]); else ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// ─── Compute optimal yaw (sets me._optYaw, me._optOffsetDeg, me._yourOffsetDeg) ───
+function computeOptimal() {
+  const fmP = cam.currentInputs.fm, smP = cam.currentInputs.sm;
+  const wishP = computeWish(cam.yaw, fmP, smP, PHYS.gSpeed);
+  const V = Math.hypot(cam.vx, cam.vy);
+  if (!wishP || V < 1 || smP === 0) {
+    cam._optYaw = null; cam._optOffsetDeg = null; cam._yourOffsetDeg = null;
+    return;
+  }
+  const accel = cam.onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
+  const Delta = accel * (1/cfg.fps) * wishP.speed;
+  const cosT = (wishP.speed - Delta) / V;
+  const theta = cosT >= 1 ? 0 : Math.acos(Math.max(-1, cosT));
+  const velAng = Math.atan2(cam.vy, cam.vx);
+  const side = smP > 0 ? -1 : +1;
+  const wishAngOpt = velAng + side * theta;
+  const wishOffset = Math.atan2(-smP, fmP);
+  cam._optYaw = wishAngOpt - wishOffset;
+  let off = cam._optYaw - velAng; while(off>Math.PI)off-=2*Math.PI; while(off<-Math.PI)off+=2*Math.PI;
+  cam._optOffsetDeg = off * 180/Math.PI;
+  let yoff = cam.yaw - velAng; while(yoff>Math.PI)yoff-=2*Math.PI; while(yoff<-Math.PI)yoff+=2*Math.PI;
+  cam._yourOffsetDeg = yoff * 180/Math.PI;
+}
+
+function renderFirstPerson(W, H) {
+  VP_W = W; VP_H = H;
+  // ── Sky (brighter, with horizon glow + sun disc) ──
+  const sky = ctx.createLinearGradient(0,0,0,H/2);
+  sky.addColorStop(0,    '#1a2342');
+  sky.addColorStop(0.55, '#3a4a78');
+  sky.addColorStop(1,    '#6b7fb0');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,W,H/2);
+  // Sun (fixed at +y direction so always "ahead" — orient by world)
+  {
+    const horizonY = H/2;
+    // Project a point far ahead at horizon height
+    const ahead = project(0, cam.y + 10000, TRACK.wallHeight * 4);
+    if (ahead && ahead.fwd > NEAR) {
+      const sunR = Math.min(60, W*0.06);
+      const sunGrd = ctx.createRadialGradient(ahead.x, horizonY - 10, 0, ahead.x, horizonY - 10, sunR*1.8);
+      sunGrd.addColorStop(0, 'rgba(255,220,140,0.9)');
+      sunGrd.addColorStop(0.5, 'rgba(255,180,100,0.45)');
+      sunGrd.addColorStop(1, 'rgba(255,160,80,0)');
+      ctx.fillStyle = sunGrd;
+      ctx.beginPath(); ctx.arc(ahead.x, horizonY - 10, sunR*1.8, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#ffe9b0';
+      ctx.beginPath(); ctx.arc(ahead.x, horizonY - 10, sunR*0.55, 0, Math.PI*2); ctx.fill();
+    }
+  }
+  // ── Ground beyond walls (terrain) ──
+  const grd = ctx.createLinearGradient(0,H/2,0,H);
+  grd.addColorStop(0, '#2a3445');
+  grd.addColorStop(1, '#11161e');
+  ctx.fillStyle = grd; ctx.fillRect(0,H/2,W,H/2);
+
+  const halfW = TRACK.width/2;
+  // Render a symmetric range around the camera so looking backward shows
+  // the corridor behind you, not empty terrain. Polygon clipping culls the
+  // half outside the view frustum so the unused half is cheap.
+  const yViewMin = Math.max(0, cam.y - 5000);
+  const yViewMax = Math.min(TRACK.length, cam.y + 5000);
+
+  // ── Track floor fill — ONE big polygon, no chunk alternation. Chunked
+  // alternation flickers when the camera straddles a boundary because the
+  // clipped polygon recomputes its near-edge each frame and the boundary
+  // between adjacent colors shifts by sub-pixels. A single uniform fill +
+  // decorative cross-lines on top is robust under any camera motion.
+  function fillPoly(pts, color) {
+    const clipped = clipPolyToViewport(pts);
+    if (clipped.length < 3) return;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(clipped[0].x, clipped[0].y);
+    for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
+    ctx.closePath(); ctx.fill();
+  }
+  {
+    const floorProj = projPolygonClipped([
+      [-halfW, yViewMin, 0], [halfW, yViewMin, 0],
+      [halfW, yViewMax, 0],  [-halfW, yViewMax, 0],
+    ]);
+    fillPoly(floorProj, '#222b39');
+  }
+
+  // ── Centerline lane stripe (bright yellow, dashed every 250 ups) ──
+  for (let y = Math.floor(yViewMin/250)*250; y < yViewMax; y += 250) {
+    if (Math.floor(y/250) % 2 !== 0) continue;
+    const y1 = y, y2 = Math.min(y + 125, yViewMax);
+    const seg = projectLine(0, y1, 0, 0, y2, 0);
+    if (seg) strokeLine(seg[0], seg[1], '#d29922', 3);
+  }
+  // ── Side painted lanes (white edge) ──
+  for (const sx of [-halfW + 20, halfW - 20]) {
+    const seg = projectLine(sx, yViewMin, 0, sx, yViewMax, 0);
+    if (seg) strokeLine(seg[0], seg[1], 'rgba(230,237,243,0.55)', 2);
+  }
+  // ── Floor cross-lines (brighter, every 100 ups) ──
+  for (let y = Math.floor(yViewMin/100)*100; y <= yViewMax; y += 100) {
+    const big = (y % 500 === 0);
+    const seg = projectLine(-halfW, y, 0, halfW, y, 0);
+    if (seg) strokeLine(seg[0], seg[1], big ? 'rgba(110,118,129,0.7)' : 'rgba(110,118,129,0.25)', big ? 1.5 : 1);
+  }
+
+  // ── Walls — fill is derived FROM the projected base+top edges in screen
+  // space, rather than re-running 3D polygon clipping on 4 corners. Because
+  // projectLine already clips the base and top edges identically (same fwd
+  // values, since they share x,y), their screen endpoints form a clean 2D
+  // quad with no chance of degenerating into a flickering shape.
+  for (const side of [-halfW, halfW]) {
+    const botL = projectLine(side, yViewMin, 0, side, yViewMax, 0);
+    const topL = projectLine(side, yViewMin, TRACK.wallHeight, side, yViewMax, TRACK.wallHeight);
+    if (botL && topL) {
+      fillPoly([botL[0], botL[1], topL[1], topL[0]], '#30374a');
+    }
+    if (botL) strokeLine(botL[0], botL[1], '#5d6470', 2);
+    if (topL) strokeLine(topL[0], topL[1], '#7d8490', 2);
+    // Vertical posts every 500 ups with colored cap
+    for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
+      if (y < 0 || y > TRACK.length) continue;
+      const post = projectLine(side, y, 0, side, y, TRACK.wallHeight);
+      if (post) strokeLine(post[0], post[1], '#5d6470', 1.5);
+      // colored band at top
+      const cap = projectLine(side, y - 20, TRACK.wallHeight, side, y + 20, TRACK.wallHeight);
+      if (cap) strokeLine(cap[0], cap[1], '#58a6ff', 3);
+    }
+  }
+  // ── Distance markers on the ground every 500 ups, with big numbers every 1000 ──
+  for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
+    if (y <= 0 || y > TRACK.length) continue;
+    const line = projectLine(-halfW, y, 0, halfW, y, 0);
+    if (line) strokeLine(line[0], line[1], (y % 1000 === 0) ? 'rgba(255,255,255,0.5)' : 'rgba(180,180,180,0.25)', y % 1000 === 0 ? 2.5 : 1.5);
+    // Floating sign at floor center
+    if (y % 1000 === 0) {
+      const c = project(0, y, 8);
+      if (c) {
+        const sz = Math.max(11, Math.min(32, c.focal/c.fwd * 3));
+        ctx.fillStyle = '#ffd070'; ctx.font = `bold ${sz}px monospace`;
+        const label = y.toString();
+        const m = ctx.measureText(label);
+        ctx.fillText(label, c.x - m.width/2, c.y);
+      }
+    }
+  }
+  // ── Finish line — checker pattern + big banner ──
+  if (cam.y < TRACK.length + 500) {
+    const checkers = 12;
+    const cw = TRACK.width / checkers;
+    for (let i = 0; i < checkers; i++) {
+      const x1 = -halfW + i*cw, x2 = x1 + cw;
+      // small extension before the line
+      const proj = projPolygonClipped([
+        [x1, TRACK.length - 50, 0], [x2, TRACK.length - 50, 0],
+        [x2, TRACK.length, 0],      [x1, TRACK.length, 0],
+      ]);
+      fillPoly(proj, (i % 2 === 0) ? '#56d364' : '#ffffff');
+    }
+    // Vertical banner posts + top trim
+    const finTop = projectLine(-halfW, TRACK.length, TRACK.wallHeight, halfW, TRACK.length, TRACK.wallHeight);
+    if (finTop) strokeLine(finTop[0], finTop[1], '#56d364', 4);
+    const finL = projectLine(-halfW, TRACK.length, 0, -halfW, TRACK.length, TRACK.wallHeight);
+    const finR = projectLine( halfW, TRACK.length, 0,  halfW, TRACK.length, TRACK.wallHeight);
+    if (finL) strokeLine(finL[0], finL[1], '#56d364', 5);
+    if (finR) strokeLine(finR[0], finR[1], '#56d364', 5);
+    // "FINISH" text on the top trim
+    const cTxt = project(0, TRACK.length, TRACK.wallHeight + 30);
+    if (cTxt && cTxt.fwd > NEAR) {
+      const sz = Math.max(14, Math.min(60, cTxt.focal/cTxt.fwd * 5));
+      ctx.fillStyle = '#56d364'; ctx.font = `bold ${sz}px monospace`;
+      const t = 'FINISH';
+      const m = ctx.measureText(t);
+      ctx.fillText(t, cTxt.x - m.width/2, cTxt.y);
+    }
+  }
+  // Other avatars (everything we're NOT spectating, in painter's order by distance).
+  {
+    const others = [me, bot1, bot2].filter(e => e !== cam);
+    const visible = others.filter(e => e === me || cfg.botsVisible !== '0');
+    // sort far→near so closer ones overdraw
+    const projected = visible.map(e => {
+      const head = project(e.x, e.y, e.z + EYE_HEIGHT);
+      const feet = project(e.x, e.y, e.z);
+      return { e, head, feet, fwd: head ? head.fwd : Infinity };
+    }).filter(p => p.head && p.feet).sort((a,b) => b.fwd - a.fwd);
+    for (const p of projected) {
+      const { e, head, feet } = p;
+      const h = Math.abs(head.y - feet.y);
+      ctx.strokeStyle = e.color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(head.x, head.y); ctx.lineTo(feet.x, feet.y); ctx.stroke();
+      ctx.fillStyle = e.color;
+      ctx.beginPath(); ctx.arc(head.x, head.y, Math.max(2, h*0.12), 0, Math.PI*2); ctx.fill();
+      const Vo = Math.hypot(e.vx, e.vy);
+      ctx.fillStyle = e.color; ctx.font = '11px monospace';
+      const lbl = `${e.label} ${Vo.toFixed(0)}`;
+      ctx.fillText(lbl, head.x - ctx.measureText(lbl).width/2, head.y - 8);
+    }
+  }
+  // Crosshair (always centered)
+  const cx = W/2, cy = H/2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx-10, cy); ctx.lineTo(cx+10, cy);
+  ctx.moveTo(cx, cy-10); ctx.lineTo(cx, cy+10); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.beginPath(); ctx.arc(cx, cy, 2.5, 0, Math.PI*2); ctx.stroke();
+
+  // Gaining-zone band + optimal line
+  const zone = gainingZone();
+  const halfFov = FOV_DEG/2 * Math.PI/180;
+  const focal = (W/2) / Math.tan(halfFov);
+  function yawToScreenX(yaw) {
+    let d = yaw - cam.yaw;
+    while (d > Math.PI) d -= 2*Math.PI;
+    while (d < -Math.PI) d += 2*Math.PI;
+    if (Math.abs(d) >= halfFov * 0.99) return null;  // off-screen
+    return { x: cx - focal*Math.tan(d), d };
+  }
+  if (zone) {
+    const a = yawToScreenX(zone.yawMin);  // edge nearest velocity (cap-bound boundary, optimal sits here)
+    const b = yawToScreenX(zone.yawMax);  // perpendicular-ish edge
+    const o = yawToScreenX(zone.yawOpt);
+    // Resolve on-screen positions even if one edge is off — clamp
+    function clampedX(yaw) {
+      let d = yaw - cam.yaw;
+      while (d > Math.PI) d -= 2*Math.PI;
+      while (d < -Math.PI) d += 2*Math.PI;
+      if (d >  halfFov) return { x: -50, off: 'right' };  // CCW = LEFT in world; off the LEFT edge means d > halfFov? Wait
+      if (d < -halfFov) return { x: W + 50, off: 'left' }; // d < -halfFov means yaw is CW (right in world) → screen right
+      return { x: cx - focal*Math.tan(d), off: null };
+    }
+    const ax = clampedX(zone.yawMin), bx = clampedX(zone.yawMax), ox = clampedX(zone.yawOpt);
+    const lo = Math.min(ax.x, bx.x), hi = Math.max(ax.x, bx.x);
+    const left = Math.max(0, Math.min(W, lo));
+    const right = Math.max(0, Math.min(W, hi));
+    if (right > left) {
+      // Tinted band over full vertical (gaining zone)
+      ctx.fillStyle = 'rgba(86,211,100,0.10)';
+      ctx.fillRect(left, 0, right - left, H);
+      // Boundary dashed lines (only if on screen)
+      ctx.setLineDash([6,4]); ctx.strokeStyle = 'rgba(86,211,100,0.55)'; ctx.lineWidth = 1.2;
+      if (a) { ctx.beginPath(); ctx.moveTo(a.x, 0); ctx.lineTo(a.x, H); ctx.stroke(); }
+      if (b) { ctx.beginPath(); ctx.moveTo(b.x, 0); ctx.lineTo(b.x, H); ctx.stroke(); }
+      ctx.setLineDash([]);
+      // Labels at top
+      ctx.fillStyle = 'rgba(86,211,100,0.75)'; ctx.font = '10px monospace';
+      ctx.fillText('← gaining zone →', (left+right)/2 - 50, 12);
+    }
+    // Optimal: bright solid line + star
+    if (o) {
+      ctx.strokeStyle = '#56d364'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(o.x, 0); ctx.lineTo(o.x, H); ctx.stroke();
+      ctx.fillStyle = '#56d364'; ctx.font = 'bold 28px monospace';
+      const star = '★', sm = ctx.measureText(star);
+      ctx.fillText(star, o.x - sm.width/2, cy - 22);
+      ctx.font = 'bold 11px monospace';
+      const lbl = 'MAX SPEED';
+      const lm = ctx.measureText(lbl);
+      ctx.fillText(lbl, o.x - lm.width/2, cy - 48);
+    } else if (cam._optYaw != null) {
+      // optimal off-screen → big edge arrow
+      let dyaw = cam._optYaw - cam.yaw;
+      while (dyaw > Math.PI) dyaw -= 2*Math.PI;
+      while (dyaw < -Math.PI) dyaw += 2*Math.PI;
+      const goLeft = dyaw > 0;
+      const ex = goLeft ? 40 : W - 40;
+      ctx.fillStyle = '#56d364'; ctx.font = 'bold 40px monospace';
+      ctx.fillText(goLeft ? '◀' : '▶', ex - 16, cy + 14);
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText('TURN ' + (goLeft ? 'LEFT' : 'RIGHT'), ex - 38, cy - 30);
+      ctx.fillText((Math.abs(dyaw)*180/Math.PI).toFixed(0) + '°', ex - 12, cy - 14);
+    }
+  }
+
+  // Current speed ABOVE crosshair
+  const Vcam = Math.hypot(cam.vx, cam.vy);
+  ctx.fillStyle = cam.onGround ? '#d29922' : '#58a6ff';
+  ctx.font = 'bold 24px monospace';
+  const vAbove = Vcam.toFixed(0);
+  const vam = ctx.measureText(vAbove);
+  ctx.fillText(vAbove, cx - vam.width/2, cy - 24);
+  ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace';
+  ctx.fillText('ups', cx - 9, cy - 42);
+
+  // HUD: big speed bottom-left (kept)
+  ctx.fillStyle = '#58a6ff'; ctx.font = 'bold 44px monospace';
+  const vTxt = Vcam.toFixed(0);
+  ctx.fillText(vTxt, 24, H - 28);
+  ctx.fillStyle = '#8b949e'; ctx.font = '14px monospace';
+  ctx.fillText('ups', 24 + ctx.measureText(vTxt).width + 6, H - 28);
+  // State
+  ctx.fillStyle = cam.onGround ? '#d29922' : '#58a6ff'; ctx.font = 'bold 13px monospace';
+  ctx.fillText(cam.onGround ? '[ GROUND ]' : '[ AIR ]', 24, H - 56);
+  // Distance to finish
+  const remain = Math.max(0, TRACK.length - cam.y);
+  ctx.fillStyle = '#6e7681'; ctx.font = '11px monospace';
+  ctx.fillText(`${remain.toFixed(0)} ups to finish (${(cam.y/TRACK.length*100).toFixed(0)}%)`, 24, H - 70);
+
+  // Spectator / play indicator (top-left)
+  ctx.fillStyle = cam.color; ctx.font = 'bold 11px monospace';
+  const camTag = (cam === me)
+    ? `◉ PLAYING (you) — V to spectate bots`
+    : `◉ SPECTATING ${cam.label.toUpperCase()} (${cam.strategy === 'alt1' ? 'switch every jump' : 'switch every 2 jumps'}) — V cycles view`;
+  ctx.fillText(camTag, 14, 16);
+
+  // Off-track warning
+  if (Math.abs(cam.x) > halfW) {
+    ctx.fillStyle = '#f85149'; ctx.font = 'bold 12px monospace';
+    ctx.fillText('OFF TRACK — R to reset', 14, 32);
+  }
+  if (cam.y >= TRACK.length) {
+    ctx.fillStyle = '#56d364'; ctx.font = 'bold 24px monospace';
+    ctx.fillText('FINISH!', W/2 - 50, 40);
+  }
+  // Race-start hint — visible until the player jumps for the first time.
+  if (!raceStarted) {
+    const txt = 'READY · press SPACE to start the race';
+    ctx.font = 'bold 18px monospace';
+    const m = ctx.measureText(txt);
+    const x0 = W/2 - m.width/2 - 12, y0 = 50;
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(x0, y0 - 18, m.width + 24, 28);
+    ctx.fillStyle = '#ffd070';
+    ctx.fillText(txt, W/2 - m.width/2, y0 + 2);
+  }
+
+  // Per-jump speed log (bottom strip, full width minus the speed box)
+  const log = cam.jumpLog;
+  if (log.length > 0) {
+    const yBar = H - 8;
+    let cursorX = 180;
+    ctx.font = '11px monospace';
+    const peak = log.reduce((m, j) => Math.max(m, j.land || j.takeoff), 0);
+    ctx.fillStyle = '#6e7681';
+    ctx.fillText(`peak ${peak.toFixed(0)}  ·  last ${log.length} jumps:`, cursorX, yBar);
+    cursorX += ctx.measureText(`peak ${peak.toFixed(0)}  ·  last ${log.length} jumps: `).width;
+    for (let i = 0; i < log.length; i++) {
+      const j = log[i];
+      // takeoff
+      ctx.fillStyle = '#e6edf3';
+      const t = j.takeoff.toFixed(0);
+      ctx.fillText(t, cursorX, yBar);
+      cursorX += ctx.measureText(t).width;
+      // gain (if landed)
+      if (j.gain != null) {
+        const g = j.gain;
+        ctx.fillStyle = g > 0 ? '#56d364' : (g < -1 ? '#f85149' : '#8b949e');
+        const gT = (g >= 0 ? ' +' : ' ') + g.toFixed(0);
+        ctx.fillText(gT, cursorX, yBar);
+        cursorX += ctx.measureText(gT).width;
+      }
+      if (i < log.length - 1) {
+        ctx.fillStyle = '#3d4451';
+        ctx.fillText(' › ', cursorX, yBar);
+        cursorX += ctx.measureText(' › ').width;
+      }
+      if (cursorX > W - 60) break;
+    }
+  }
+}
+
+// ─── Top-down view (bottom half of canvas) ───
+const TD_SCALE = 0.18; // px / up
+function renderTopDown(W, H) {
+  ctx.fillStyle = '#0a0d12'; ctx.fillRect(0, 0, W, H);
+  const cx = W/2, cy = H/2;
+  const w2t = (wx, wy) => [cx + (wx - cam.x)*TD_SCALE, cy - (wy - cam.y)*TD_SCALE];
+  // grid
+  ctx.strokeStyle = '#161b22'; ctx.lineWidth = 1;
+  const gap = 100 * TD_SCALE;
+  const ox = (-cam.x * TD_SCALE) % gap, oy = (cam.y * TD_SCALE) % gap;
+  for (let x = ox; x < W; x += gap) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = oy; y < H; y += gap) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // bigger grid every 500
+  ctx.strokeStyle = '#21262d';
+  const big = 500 * TD_SCALE;
+  const ox2 = (-cam.x * TD_SCALE) % big, oy2 = (cam.y * TD_SCALE) % big;
+  for (let x = ox2; x < W; x += big) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = oy2; y < H; y += big) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // Track walls
+  const halfW = TRACK.width/2;
+  const [wlA, wlB] = [w2t(-halfW, 0), w2t(-halfW, TRACK.length)];
+  const [wrA, wrB] = [w2t( halfW, 0), w2t( halfW, TRACK.length)];
+  ctx.strokeStyle = '#3d4451'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(wlA[0], wlA[1]); ctx.lineTo(wlB[0], wlB[1]); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(wrA[0], wrA[1]); ctx.lineTo(wrB[0], wrB[1]); ctx.stroke();
+  // Distance markers
+  ctx.strokeStyle = '#2d3340'; ctx.lineWidth = 1;
+  for (let y = 0; y <= TRACK.length; y += 500) {
+    const a = w2t(-halfW, y), b = w2t(halfW, y);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  }
+  // Finish line
+  const [fa, fb] = [w2t(-halfW, TRACK.length), w2t(halfW, TRACK.length)];
+  ctx.strokeStyle = '#56d364'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(fa[0], fa[1]); ctx.lineTo(fb[0], fb[1]); ctx.stroke();
+
+  // Gaining-zone WEDGE from player (translucent green)
+  const zone = gainingZone();
+  if (zone) {
+    const R = 200;
+    let a1 = -zone.yawMin;  // canvas y-down: angle CCW in world = CW in canvas → negate
+    let a2 = -zone.yawMax;
+    // Ensure a1 < a2 in the direction we sweep
+    if (a2 < a1) { const t = a1; a1 = a2; a2 = t; }
+    ctx.fillStyle = 'rgba(86,211,100,0.13)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, R, a1, a2, false);
+    ctx.closePath(); ctx.fill();
+    // Boundary lines
+    ctx.strokeStyle = 'rgba(86,211,100,0.5)'; ctx.lineWidth = 1; ctx.setLineDash([5,4]);
+    for (const ya of [zone.yawMin, zone.yawMax]) {
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + R*Math.cos(ya), cy - R*Math.sin(ya));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // Optimal direction (solid bright)
+    ctx.strokeStyle = '#56d364'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + (R+10)*Math.cos(zone.yawOpt), cy - (R+10)*Math.sin(zone.yawOpt));
+    ctx.stroke();
+    ctx.fillStyle = '#56d364'; ctx.font = 'bold 11px monospace';
+    const lx = cx + (R+18)*Math.cos(zone.yawOpt), ly = cy - (R+18)*Math.sin(zone.yawOpt);
+    ctx.fillText('★ MAX', lx - 18, ly + 4);
+  }
+
+  // Trails — bot1 green, bot2 orange, you blue. Cam entity drawn last (brightest).
+  function drawTrailTD(e, alpha, width) {
+    if (e.trail.length < 2) return;
+    const [r,g,b] = (() => {
+      if (e === me) return [88,166,255];
+      if (e === bot1) return [86,211,100];
+      return [240,136,62];
+    })();
+    ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (let i = 0; i < e.trail.length; i++) {
+      const [tx, ty] = w2t(e.trail[i][0], e.trail[i][1]);
+      i ? ctx.lineTo(tx, ty) : ctx.moveTo(tx, ty);
+    }
+    ctx.stroke();
+  }
+  // Non-cam first (dimmer)
+  for (const e of [me, bot1, bot2]) {
+    if (e === cam) continue;
+    if (e !== me && cfg.botsVisible === '0') continue;
+    drawTrailTD(e, 0.55, 1.3);
+  }
+  // Cam trail brightest
+  drawTrailTD(cam, 0.95, 1.8);
+
+  // Dots for non-cam entities
+  for (const e of [me, bot1, bot2]) {
+    if (e === cam) continue;
+    if (e !== me && cfg.botsVisible === '0') continue;
+    const [ox_, oy_] = w2t(e.x, e.y);
+    ctx.fillStyle = e.color;
+    ctx.beginPath(); ctx.arc(ox_, oy_, 3, 0, Math.PI*2); ctx.fill();
+  }
+  // Velocity (red), View (white), Wishdir (faint blue) — for cam entity
+  const V = Math.hypot(cam.vx, cam.vy);
+  if (V > 1) {
+    const a = Math.atan2(cam.vy, cam.vx);
+    const len = Math.min(V * 0.12, 80);
+    drawArrow(cx, cy, cx + len*Math.cos(a), cy - len*Math.sin(a), '#f85149', 2.5);
+    ctx.fillStyle = '#f85149'; ctx.font = '10px monospace';
+    ctx.fillText(`v=${V.toFixed(0)}`, cx + (len+6)*Math.cos(a), cy - (len+6)*Math.sin(a));
+  }
+  drawArrow(cx, cy, cx + 56*Math.cos(cam.yaw), cy - 56*Math.sin(cam.yaw), '#ffffff', 2);
+  ctx.fillStyle = '#ffffff'; ctx.font = '10px monospace';
+  ctx.fillText('view', cx + 62*Math.cos(cam.yaw), cy - 62*Math.sin(cam.yaw));
+  const fmP = cam.currentInputs.fm, smP = cam.currentInputs.sm;
+  const wishP = computeWish(cam.yaw, fmP, smP, PHYS.gSpeed);
+  if (wishP) {
+    drawArrow(cx, cy, cx + 38*wishP.dx, cy - 38*wishP.dy, 'rgba(88,166,255,0.55)', 1.3);
+  }
+  // Cam dot (center)
+  ctx.fillStyle = cam.color;
+  ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.fill();
+
+  // Legend / label
+  ctx.fillStyle = '#6e7681'; ctx.font = '10px monospace';
+  ctx.fillText('TOP-DOWN · green wedge = gaining zone · ★ = max-speed direction', 8, H - 8);
+}
+
+// (legacy stub — disabled; kept commented for reference)
+/* removed: renderMinimap_OLD, drawTrail, drawEntity (referenced renamed 'bot')
+function renderMinimap_OLD() {
+  const W = arena.width, H = arena.height;
+  const mx = W - MINI_SIZE - 14, my = 14;
+  // bg
+  ctx.fillStyle = 'rgba(10,13,18,0.92)';
+  ctx.fillRect(mx, my, MINI_SIZE, MINI_SIZE);
+  ctx.strokeStyle = '#21262d'; ctx.lineWidth = 1;
+  ctx.strokeRect(mx, my, MINI_SIZE, MINI_SIZE);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(mx, my, MINI_SIZE, MINI_SIZE); ctx.clip();
+
+  const cx = mx + MINI_SIZE/2, cy = my + MINI_SIZE/2;
+  const w2m = (wx, wy) => [cx + (wx - me.x) * MINI_SCALE, cy - (wy - me.y) * MINI_SCALE];
+  // track walls
+  const halfW = TRACK.width/2;
+  const [wl1, wl2] = [w2m(-halfW, 0), w2m(-halfW, TRACK.length)];
+  const [wr1, wr2] = [w2m( halfW, 0), w2m( halfW, TRACK.length)];
+  ctx.strokeStyle = '#3d4451'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(wl1[0], wl1[1]); ctx.lineTo(wl2[0], wl2[1]); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(wr1[0], wr1[1]); ctx.lineTo(wr2[0], wr2[1]); ctx.stroke();
+  // distance markers
+  ctx.strokeStyle = '#2d3340';
+  for (let y = 0; y <= TRACK.length; y += 500) {
+    const a = w2m(-halfW, y), b = w2m(halfW, y);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  }
+  // finish line
+  const [fl, fr] = [w2m(-halfW, TRACK.length), w2m(halfW, TRACK.length)];
+  ctx.strokeStyle = '#56d364'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(fl[0], fl[1]); ctx.lineTo(fr[0], fr[1]); ctx.stroke();
+  // bot trail + bot
+  if (cfg.botMode !== '0' && bot.trail.length > 1) {
+    ctx.strokeStyle = 'rgba(86,211,100,0.6)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < bot.trail.length; i++) {
+      const [bx, by] = w2m(bot.trail[i][0], bot.trail[i][1]);
+      i ? ctx.lineTo(bx, by) : ctx.moveTo(bx, by);
+    }
+    ctx.stroke();
+    const [bX, bY] = w2m(bot.x, bot.y);
+    ctx.fillStyle = '#56d364'; ctx.beginPath(); ctx.arc(bX, bY, 3, 0, Math.PI*2); ctx.fill();
+  }
+  // me trail
+  if (me.trail.length > 1) {
+    ctx.strokeStyle = 'rgba(88,166,255,0.85)'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < me.trail.length; i++) {
+      const [tx, ty] = w2m(me.trail[i][0], me.trail[i][1]);
+      i ? ctx.lineTo(tx, ty) : ctx.moveTo(tx, ty);
+    }
+    ctx.stroke();
+  }
+  // me + view + optimal view
+  // velocity arrow (red)
+  const V = Math.hypot(me.vx, me.vy);
+  if (V > 1) {
+    const a = Math.atan2(me.vy, me.vx);
+    const L = Math.min(V * 0.04, 30);
+    drawArrow(cx, cy, cx + L*Math.cos(a), cy - L*Math.sin(a), '#f85149', 1.5);
+  }
+  // view (white)
+  drawArrow(cx, cy, cx + 22*Math.cos(me.yaw), cy - 22*Math.sin(me.yaw), '#ffffff', 1.5);
+  // optimal (green)
+  if (me._optYaw != null) {
+    drawArrow(cx, cy, cx + 22*Math.cos(me._optYaw), cy - 22*Math.sin(me._optYaw), '#56d364', 1.5);
+  }
+  // dot
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+  // label
+  ctx.fillStyle = '#6e7681'; ctx.font = '10px monospace';
+  ctx.fillText('MAP', mx + 6, my + 12);
+}
+*/
+
+function render() {
+  computeOptimal();
+  const W = arena.width, H = arena.height;
+  const fpH = Math.floor(H * 0.62);
+  const tdH = H - fpH - 1; // 1px for divider
+  // First-person view (top)
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, W, fpH); ctx.clip();
+  renderFirstPerson(W, fpH);
+  ctx.restore();
+  // Divider
+  ctx.fillStyle = '#21262d'; ctx.fillRect(0, fpH, W, 1);
+  // Top-down (bottom)
+  ctx.save();
+  ctx.translate(0, fpH + 1);
+  ctx.beginPath(); ctx.rect(0, 0, W, tdH); ctx.clip();
+  renderTopDown(W, tdH);
+  ctx.restore();
+}
+
+function inputVec() {
+  return [
+    (keys.w ? 127 : 0) + (keys.s ? -127 : 0),
+    (keys.d ? 127 : 0) + (keys.a ? -127 : 0),
+  ];
+}
+
+// ───── HUD update ─────
+function updateHUD() {
+  const V = Math.hypot(me.vx, me.vy);
+  const Vb1 = Math.hypot(bot1.vx, bot1.vy);
+  const Vb2 = Math.hypot(bot2.vx, bot2.vy);
+  $('speed').textContent = V.toFixed(0);
+  $('bot1Speed').textContent = Vb1.toFixed(0);
+  $('bot2Speed').textContent = Vb2.toFixed(0);
+  // Forward (+y) component — what actually wins the race
+  $('fwdMe').textContent = me.vy.toFixed(0) + ' ups';
+  $('fwdBots').textContent = bot1.vy.toFixed(0) + ' / ' + bot2.vy.toFixed(0) + ' ups';
+  $('state').textContent = me.onGround ? 'GROUND' : 'AIR';
+  $('state').style.color = me.onGround ? 'var(--yellow)' : 'var(--blue)';
+  $('lastGain').textContent = (me.lastGain >= 0 ? '+' : '') + me.lastGain.toFixed(1) + ' ups';
+  $('lastGain').style.color = me.lastGain > 0 ? 'var(--green)' : 'var(--red)';
+  $('bot1LastGain').textContent = (bot1.lastGain >= 0 ? '+' : '') + bot1.lastGain.toFixed(1) + ' ups';
+  $('bot2LastGain').textContent = (bot2.lastGain >= 0 ? '+' : '') + bot2.lastGain.toFixed(1) + ' ups';
+  $('jumpCount').textContent = me.jumps;
+  $('peakSpeed').textContent = sessionPeak.toFixed(0) + ' ups';
+
+  function fmtRace(e) {
+    if (e.finishTime != null) return `${e.finishTime.toFixed(2)}s @ ${e.finishSpeed.toFixed(0)} ups`;
+    return `${e.runTime.toFixed(1)}s (running)`;
+  }
+  $('bot1Race').textContent = fmtRace(bot1);
+  $('bot2Race').textContent = fmtRace(bot2);
+  $('meRace').textContent = fmtRace(me);
+  const pct = e => (Math.max(0, Math.min(1, e.y/TRACK.length))*100).toFixed(1);
+  $('allProgress').textContent = `${pct(bot1)}% / ${pct(bot2)}% / ${pct(me)}%`;
+
+  // Color-code by finish order
+  function colorFinish(elId, e, others) {
+    if (e.finishTime == null) return;
+    const beaten = others.every(o => o.finishTime == null || e.finishTime <= o.finishTime);
+    $(elId).style.color = beaten ? 'var(--green)' : 'var(--red)';
+  }
+  colorFinish('bot1Race', bot1, [bot2, me]);
+  colorFinish('bot2Race', bot2, [bot1, me]);
+  colorFinish('meRace',   me,   [bot1, bot2]);
+
+  // Where-to-point readout (set by render() into me._optOffsetDeg / me._yourOffsetDeg)
+  function fmtOff(d) {
+    if (d === null || d === undefined || isNaN(d)) return '—';
+    const mag = Math.abs(d).toFixed(0);
+    if (Math.abs(d) < 1) return '0° (straight ahead)';
+    return mag + '° ' + (d > 0 ? 'LEFT' : 'RIGHT');
+  }
+  $('optOff').textContent = fmtOff(me._optOffsetDeg);
+  $('yourOff').textContent = fmtOff(me._yourOffsetDeg);
+  if (me._optOffsetDeg != null && me._yourOffsetDeg != null) {
+    const err = me._yourOffsetDeg - me._optOffsetDeg;
+    $('offErr').textContent = (err >= 0 ? '+' : '') + err.toFixed(1) + '°';
+    $('offErr').style.color = Math.abs(err) < 3 ? 'var(--green)' : Math.abs(err) < 10 ? 'var(--yellow)' : 'var(--red)';
+  } else {
+    $('offErr').textContent = '—'; $('offErr').style.color = 'var(--dim)';
+  }
+
+  // Turn-rate bar: compare to optimal yaw-rate "ahead" of velocity
+  // While air-strafing, the bot turns at rate ~ dθ/dt + d(velAng)/dt.
+  // We can compute a *target* turn rate from the optimal-yaw-bot at current V.
+  let bar = 50; let cls = ''; let lessonText = '';
+  if (!me.onGround) {
+    const [fm, sm] = inputVec();
+    if (sm !== 0 && fm !== 0 && V > 50) {
+      // Estimate current yaw rate (recent)
+      const recent = yawRateHistory.slice(-10);
+      const avgRate = recent.length ? recent.reduce((a,b)=>a+b.rate,0)/recent.length : 0;
+      // Compute optimal yaw rate by simulating one step on a copy with bot brain
+      const tmp = { vx: me.vx, vy: me.vy, vz: me.vz, onGround: false, yaw: me.yaw, strafeSide: sm>0?1:-1 };
+      const dt = 1/cfg.fps;
+      const wishspeed = PHYS.gSpeed;
+      const Delta = PHYS.pm_airaccelerate * dt * wishspeed;
+      const cosT = (wishspeed - Delta) / V;
+      const theta = cosT >= 1 ? 0 : Math.acos(Math.max(-1, cosT));
+      const velAng = Math.atan2(me.vy, me.vx);
+      const side = sm > 0 ? -1 : +1;
+      const wishAngTarget = velAng + side * theta;
+      const wishOffset = Math.atan2(-sm, fm);
+      const optYawNow = wishAngTarget - wishOffset;
+      let yawErr = optYawNow - me.yaw;
+      while (yawErr > Math.PI) yawErr -= 2*Math.PI;
+      while (yawErr < -Math.PI) yawErr += 2*Math.PI;
+      const errDeg = yawErr * 180/Math.PI;
+      // Map errDeg → bar position
+      const norm = Math.max(-30, Math.min(30, errDeg)) / 30;
+      // If sm>0 (D, turning right = yaw decreasing), we want yaw err < 0 → turn faster right
+      // Normalize: positive bar = "turn faster", negative = "turn slower"
+      const need = side > 0 ? -norm : norm; // need to increase yaw if going left
+      bar = 50 + need * 45;
+      if (Math.abs(errDeg) < 3) {
+        cls = 'good';
+        lessonText = '<b>Locked on.</b> Hold this turn rate. As speed climbs, you\'ll need to turn faster — let the optimal arrow (green dashed) guide you.';
+      } else if ((side > 0 && errDeg > 0) || (side < 0 && errDeg < 0)) {
+        cls = 'warn';
+        lessonText = '<b>Turning too slow.</b> Move your mouse faster in the strafe direction. Your wishdir is lagging behind velocity → the addspeed cap is hitting.';
+      } else {
+        cls = '';
+        lessonText = '<b>Turning too fast.</b> Wishdir has overshot velocity — you\'re still gaining a tiny bit but well below optimal. Slow your mouse.';
+      }
+    } else if (V > 50) {
+      cls = ''; lessonText = 'In air but no strafe input. Hold <b>W</b> + <b>A or D</b> to make wishdir do work.';
+    } else {
+      cls = ''; lessonText = 'Speed is low. Get to ~320 on ground first (hold W+D, run forward).';
+    }
+  } else {
+    if (V < 50) {
+      lessonText = 'You\'re on the ground at low speed. Hold <b>W</b> to accelerate, ground accel is fast.';
+    } else if (V < 315) {
+      lessonText = `Accelerating on ground (cap = 320). Press <b>Space</b> when you're close to 320 to jump.`;
+    } else if (V >= 315) {
+      lessonText = '<b>You\'re at ground cap.</b> Press <b>Space</b> NOW to jump and start air-strafing. Hold <b>Space</b> for auto-hop.';
+      cls = 'good';
+    }
+    if (me.justLanded && me.lastGain > 0) {
+      lessonText = `Landed with <b>+${me.lastGain.toFixed(1)} ups</b>. Bot1 just flipped to <b>${bot1.strafeSide>0?'D':'A'}</b>. Try alternating: switch your strafe key now.`;
+    }
+  }
+  $('rateBar').style.width = bar + '%';
+  $('rateBar').style.background = cls === 'good' ? 'var(--green)' : cls === 'warn' ? 'var(--red)' : 'var(--yellow)';
+  $('lesson').className = 'lesson ' + cls;
+  if (lessonText !== lessonState) {
+    $('lesson').innerHTML = lessonText;
+    lessonState = lessonText;
+  }
+
+  drawChart();
+}
+
+// ───── Chart ─────
+// Plots TWO series per entity: total speed (thin dashed) + forward (+y) speed
+// (thick solid). Total speed overlaps between bot1/bot2 (same air physics);
+// the divergence in forward speed is what wins the race.
+function drawChart() {
+  const W = chart.width, H = chart.height;
+  cctx.fillStyle = '#0a0d12'; cctx.fillRect(0,0,W,H);
+  if (speedHist.length < 2) return;
+  const tMax = speedHist[speedHist.length-1].t;
+  const tMin = tMax - 15;
+  let vMax = PHYS.gSpeed * 1.2;
+  for (const p of speedHist) vMax = Math.max(vMax, p.me, p.bot1, p.bot2);
+  // gridlines
+  cctx.strokeStyle = '#161b22'; cctx.lineWidth = 1;
+  for (let s = 200; s <= vMax; s += 200) {
+    const y = H - (s/vMax)*(H-10);
+    cctx.beginPath(); cctx.moveTo(0,y); cctx.lineTo(W,y); cctx.stroke();
+    cctx.fillStyle = '#484f58'; cctx.font = '10px monospace'; cctx.fillText(s, 2, y - 2);
+  }
+  // g_speed line
+  const gy = H - (PHYS.gSpeed/vMax)*(H-10);
+  cctx.strokeStyle = '#d29922'; cctx.setLineDash([3,3]);
+  cctx.beginPath(); cctx.moveTo(0,gy); cctx.lineTo(W,gy); cctx.stroke();
+  cctx.setLineDash([]);
+  function plotSeries(getter, color, width, dashed) {
+    cctx.strokeStyle = color; cctx.lineWidth = width;
+    cctx.setLineDash(dashed ? [3,3] : []);
+    cctx.beginPath();
+    for (let i = 0; i < speedHist.length; i++) {
+      const p = speedHist[i];
+      const x = ((p.t - tMin)/15)*W, y = H - (getter(p)/vMax)*(H-10);
+      i ? cctx.lineTo(x,y) : cctx.moveTo(x,y);
+    }
+    cctx.stroke();
+    cctx.setLineDash([]);
+  }
+  // Total speeds — dashed thin (bot1/bot2 will overlap; that's the point)
+  plotSeries(p => p.bot2, '#f0883e', 1.0, true);
+  plotSeries(p => p.bot1, '#56d364', 1.0, true);
+  plotSeries(p => p.me,   '#58a6ff', 1.0, true);
+  // Forward (+y) speeds — solid thick (the meaningful divergence)
+  plotSeries(p => p.fwdBot2, '#f0883e', 2.0, false);
+  plotSeries(p => p.fwdBot1, '#56d364', 2.0, false);
+  plotSeries(p => p.fwdMe,   '#58a6ff', 2.5, false);
+}
+
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
