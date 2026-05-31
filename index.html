@@ -412,20 +412,24 @@ function step(e, inputs, dt) {
   }
   applyAccel(e, effWish, accel, dt);
 
-  // CPM Air Control — rotate velocity toward view-forward when W is held.
-  // Lifted from CPMA PM_AirControl: k = 32 * pm_aircontrol * dot² * dt,
-  // velocity_new = (velocity_dir * speed) + (forward * k), then renormalize
-  // back to original speed magnitude. Skipped if forward isn't held.
-  if (isCPMair && inputs.fm !== 0) {
-    const fx = Math.cos(e.yaw), fy = Math.sin(e.yaw);
+  // CPM Air Control — verbatim from OSP2's PM_AirControl (mirrors CPMA):
+  //   * Only fires when movementDir is 0 (pure forward, W only) or 4 (pure
+  //     backward, S only). W+strafe does NOT trigger aircontrol — the strafe
+  //     key sets movementDir to 1/3/5/7 and PM_AirControl early-returns.
+  //   * The rotation target is `wishdir` (the W±strafe wishvel direction),
+  //     NOT the view-forward vector. With W+strafe the two diverge by 45°.
+  //   * k = 32 * pm_aircontrol * (vel·wishdir)² * dt, velocity rotates toward
+  //     wishdir scaled by that k, then renormalised back to original speed.
+  if (isCPMair && inputs.fm !== 0 && inputs.sm === 0 && wish) {
+    const wx = wish.dx, wy = wish.dy;
     const speed = Math.hypot(e.vx, e.vy);
     if (speed > 0.1) {
       const vnx = e.vx / speed, vny = e.vy / speed;
-      const dotv = vnx*fx + vny*fy;
+      const dotv = vnx*wx + vny*wy;
       if (dotv > 0) {
         const k = 32 * PHYS.pm_aircontrol * dotv * dotv * dt;
-        let nx = vnx*speed + fx*k;
-        let ny = vny*speed + fy*k;
+        let nx = vnx*speed + wx*k;
+        let ny = vny*speed + wy*k;
         const nm = Math.hypot(nx, ny);
         if (nm > 1e-3) {
           e.vx = (nx / nm) * speed;
@@ -633,8 +637,8 @@ function applyEntityIdentity(e, src) {
 //         over tilt ∈ [-90°, 90°] (see /tmp/cpm-tilt-search.js for the
 //         method); peak |x| during the run < 700 ups at these values.
 const PRE_TILT_BY_PHYSICS = {
-  vq3: { bot1:  6.125, bot2:  16.375 },
-  cpm: { bot1: -80.0,  bot2: -73.5  },
+  vq3: { bot1: 6.125, bot2: 16.375 },
+  cpm: { bot1: 6.625, bot2: 17.500 },
 };
 const PRE_TILT_DEG = { ...PRE_TILT_BY_PHYSICS.vq3 };
 
