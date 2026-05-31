@@ -111,8 +111,8 @@
         <span><i class="sw" style="background:#f0883e"></i>bot2·LLRR·θ*</span>
         <span><i class="sw" style="background:#22d3ee"></i>bot3·LRLR·+10%</span>
         <span><i class="sw" style="background:#a78bfa"></i>bot4·LLRR·+10%</span>
-        <span><i class="sw" style="background:#facc15"></i>bot5·LRLR·−10%</span>
-        <span><i class="sw" style="background:#f87171"></i>bot6·LLRR·−10%</span>
+        <span><i class="sw" style="background:#facc15"></i>bot5·LRLR·+20%</span>
+        <span><i class="sw" style="background:#f87171"></i>bot6·LLRR·+20%</span>
         <span><i class="sw" style="background:var(--yellow)"></i>g_speed</span>
       </div>
     </div>
@@ -189,7 +189,7 @@
       <div id="raceList" style="font-size:12px; line-height:1.6"></div>
       <div class="row" style="margin-top:4px"><span>You</span><span class="v" id="meRace">running…</span></div>
       <div style="color:var(--dim); font-size:11px; margin-top:6px; line-height:1.4">
-        <b style="color:#56d364">Bot1/bot2</b> aim at θ* (perfect). <b style="color:#22d3ee">Bot3</b>/<b style="color:#a78bfa">bot4</b> aim 10% past θ* (over-shoot — slower per-frame gain). <b style="color:#facc15">Bot5</b>/<b style="color:#f87171">bot6</b> aim 10% under θ* (under-shoot — likely below θ_min, no gain at all, cruising at takeoff speed). Odd-numbered bots use LRLR; even use LLRR. R resets every timer.
+        <b style="color:#56d364">Bot1/bot2</b> aim at θ* (perfect). <b style="color:#22d3ee">Bot3</b>/<b style="color:#a78bfa">bot4</b> aim +10% past θ* (over-shoot). <b style="color:#facc15">Bot5</b>/<b style="color:#f87171">bot6</b> aim +20% past θ* (further over-shoot). Odd bots use LRLR, even use LLRR. Each bot has its own calibrated pre-tilt so the trajectory stays close to centerline. R resets every timer.
       </div>
     </div>
 
@@ -312,13 +312,12 @@ bot3.label = 'bot3'; bot3.color = '#22d3ee'; bot3.strategy = 'alt1'; bot3.thetaO
 const bot4 = makeEntity(Math.PI/2);
 bot4.label = 'bot4'; bot4.color = '#a78bfa'; bot4.strategy = 'alt2'; bot4.thetaOffsetFrac = +0.10;
 
-// 10%-off bots — view 10% *under* θ* (closer to velocity). Likely falls below
-// θ_min in many frames → no addspeed at all → flies at takeoff speed.
+// 20%-off bots — view +20% past θ* (further over-shoot than bot3/bot4).
 const bot5 = makeEntity(Math.PI/2);
-bot5.label = 'bot5'; bot5.color = '#facc15'; bot5.strategy = 'alt1'; bot5.thetaOffsetFrac = -0.10;
+bot5.label = 'bot5'; bot5.color = '#facc15'; bot5.strategy = 'alt1'; bot5.thetaOffsetFrac = +0.20;
 
 const bot6 = makeEntity(Math.PI/2);
-bot6.label = 'bot6'; bot6.color = '#f87171'; bot6.strategy = 'alt2'; bot6.thetaOffsetFrac = -0.10;
+bot6.label = 'bot6'; bot6.color = '#f87171'; bot6.strategy = 'alt2'; bot6.thetaOffsetFrac = +0.20;
 
 const bots = [bot1, bot2, bot3, bot4, bot5, bot6];
 
@@ -636,10 +635,10 @@ $('botVis').onchange = e => cfg.botsVisible = e.target.value;
 $('phys').onchange = e => {
   cfg.physics = e.target.value;
   PHYS = PHYSICS[cfg.physics];
-  // Swap to the calibrated pre-tilt for this physics mode and reflect it in the UI.
-  const calib = PRE_TILT_BY_PHYSICS[cfg.physics];
-  PRE_TILT_DEG.bot1 = calib.bot1; PRE_TILT_DEG.bot2 = calib.bot2;
-  $('tilt1').value = calib.bot1; $('tilt2').value = calib.bot2;
+  // Swap the full per-bot calibration set (bot1..bot6) and refresh the
+  // two user-facing sliders.
+  Object.assign(PRE_TILT_DEG, PRE_TILT_BY_PHYSICS[cfg.physics]);
+  $('tilt1').value = PRE_TILT_DEG.bot1; $('tilt2').value = PRE_TILT_DEG.bot2;
   resetToStart();
 };
 $('tilt1').oninput = e => { PRE_TILT_DEG.bot1 = +e.target.value; resetToStart(); };
@@ -666,9 +665,13 @@ function applyEntityIdentity(e, src) {
 //   CPM — found by sweeping a headless port of step()/botStep() in Node
 //         over tilt ∈ [-90°, 90°] (see /tmp/cpm-tilt-search.js for the
 //         method); peak |x| during the run < 700 ups at these values.
+// Per-physics, per-bot calibrated pre-tilt. bot1/bot2 (perfect aim) are
+// hand-tuned by Chiro; bot3–bot6 (10% / 20% over-shoot variants) were
+// swept in the headless Node port /tmp/cpm-tilt-search.js for minimum
+// peak |x| over the 30 000-ups run.
 const PRE_TILT_BY_PHYSICS = {
-  vq3: { bot1: 6.125, bot2: 16.375 },
-  cpm: { bot1: 6.625, bot2: 17.500 },
+  vq3: { bot1:  6.125, bot2: 16.375, bot3:  7.875, bot4: 19.625, bot5:  9.875, bot6: 22.500 },
+  cpm: { bot1:  6.625, bot2: 17.500, bot3:  8.500, bot4: 20.125, bot5: 10.375, bot6: 22.875 },
 };
 const PRE_TILT_DEG = { ...PRE_TILT_BY_PHYSICS.vq3 };
 
@@ -686,10 +689,10 @@ function resetToStart() {
   me.x   = 0;    me.y   = 0;
   bot1.x = -30;  bot1.y = 0;  bot1.strafeSide = -1;  bot1.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot1);
   bot2.x = +30;  bot2.y = 0;  bot2.strafeSide = -1;  bot2.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot2);
-  bot3.x = -60;  bot3.y = 0;  bot3.strafeSide = -1;  bot3.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot1);
-  bot4.x = +60;  bot4.y = 0;  bot4.strafeSide = -1;  bot4.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot2);
-  bot5.x = -90;  bot5.y = 0;  bot5.strafeSide = -1;  bot5.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot1);
-  bot6.x = +90;  bot6.y = 0;  bot6.strafeSide = -1;  bot6.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot2);
+  bot3.x = -60;  bot3.y = 0;  bot3.strafeSide = -1;  bot3.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot3);
+  bot4.x = +60;  bot4.y = 0;  bot4.strafeSide = -1;  bot4.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot4);
+  bot5.x = -90;  bot5.y = 0;  bot5.strafeSide = -1;  bot5.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot5);
+  bot6.x = +90;  bot6.y = 0;  bot6.strafeSide = -1;  bot6.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot6);
   speedHist.length = 0; yawRateHistory.length = 0;
   sessionPeak = 0;
   raceStarted = false;
