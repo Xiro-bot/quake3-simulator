@@ -485,12 +485,18 @@ function step(e, inputs, dt) {
       e.lastGain = e.lastLandSpeed - e.lastTakeoffSpeed;
       const lastLog = e.jumpLog[e.jumpLog.length - 1];
       if (lastLog) { lastLog.land = e.lastLandSpeed; lastLog.gain = e.lastGain; }
-    } else if (e.z < -TRACK.lava_depth && !e.fell) {
-      // Fell into the lava — mark entity. Bots freeze in place; player
-      // restart is handled at the top of the frame loop.
-      e.fell = true;
-      e.vx = e.vy = e.vz = 0;
-      e.z = -TRACK.lava_depth;
+    } else if (e.z < 0 && !onPad(e.x, e.y) && !e.fell) {
+      // In the lava plane — kill horizontal motion (you're sinking, not
+      // gliding) and let gravity drop you the rest of the way to the
+      // death threshold. Without this the player jumps a short gap, drops
+      // below z=0 mid-flight, then re-enters the next pad's y-range and
+      // "lands" on it — surfing the lava with no penalty.
+      e.vx = 0; e.vy = 0;
+      if (e.z < -TRACK.lava_depth) {
+        e.fell = true;
+        e.vz = 0;
+        e.z = -TRACK.lava_depth;
+      }
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
@@ -1106,9 +1112,18 @@ function renderFirstPerson(W, H) {
     }
   }
   // Each pad — bright top + visible front/back faces so depth reads.
+  // Painter's algorithm: render furthest-from-camera pads first so closer
+  // ones cover them. Otherwise the back of a far pad bleeds through the
+  // front of the near pad and the whole thing looks transparent.
   const padStartK = Math.max(0, Math.floor(yViewMin / PAD_PERIOD));
   const padEndK   = Math.min(Math.ceil(TRACK.length / PAD_PERIOD), Math.ceil(yViewMax / PAD_PERIOD));
+  const padOrder = [];
   for (let k = padStartK; k <= padEndK; k++) {
+    const yMid = k * PAD_PERIOD + TRACK.pad_length / 2;
+    padOrder.push({ k, dist: Math.abs(yMid - cam.y) });
+  }
+  padOrder.sort((a, b) => b.dist - a.dist);
+  for (const { k } of padOrder) {
     const y1 = k * PAD_PERIOD;
     const y2 = y1 + TRACK.pad_length;
     if (y2 < yViewMin || y1 > yViewMax) continue;
