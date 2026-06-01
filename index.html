@@ -228,14 +228,43 @@ window.addEventListener('resize', resizeArena);
 // asset files: the game's actual Sarge sample is copyrighted, but this
 // approximates the low, gravelly "ugh!" timbre at jump time.
 let audioCtx = null;
+let jumpBuffer = null;
 function ensureAudio() {
   if (audioCtx) return;
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   audioCtx = new AC();
+  loadJumpSample();  // try to load a real recording, falls back to synth on 404
+}
+// If a file exists at sounds/jump.mp3 (or .wav, .ogg) it'll be played
+// instead of the procedural synth. Anything you have rights to use is fine:
+//   • a clip you recorded on your phone (best result — it'll just be a human)
+//   • a CC0 / public-domain grunt from freesound.org
+//   • for your own local copy: an extraction from your legal Q3 install
+async function loadJumpSample() {
+  for (const ext of ['mp3','wav','ogg']) {
+    try {
+      const r = await fetch(`sounds/jump.${ext}`);
+      if (!r.ok) continue;
+      const ab = await r.arrayBuffer();
+      jumpBuffer = await audioCtx.decodeAudioData(ab);
+      console.log(`[audio] loaded sounds/jump.${ext}`);
+      return;
+    } catch {/* try next ext */}
+  }
 }
 function playJumpGrunt() {
   if (!audioCtx) return;
+  // Real recording wins if one was loaded; synth is only the fallback.
+  if (jumpBuffer) {
+    const src = audioCtx.createBufferSource();
+    src.buffer = jumpBuffer;
+    const g = audioCtx.createGain();
+    g.gain.value = 0.85;
+    src.connect(g).connect(audioCtx.destination);
+    src.start();
+    return;
+  }
   const t = audioCtx.currentTime;
   const out = audioCtx.destination;
   const dur = 0.30;
