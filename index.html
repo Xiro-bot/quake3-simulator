@@ -229,6 +229,7 @@ window.addEventListener('resize', resizeArena);
 // approximates the low, gravelly "ugh!" timbre at jump time.
 let audioCtx = null;
 let jumpBuffer = null;
+let audioStatus = 'idle';  // shown in the debug overlay so you can see what's playing
 function ensureAudio() {
   if (audioCtx) return;
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -242,16 +243,21 @@ function ensureAudio() {
 //   • a CC0 / public-domain grunt from freesound.org
 //   • for your own local copy: an extraction from your legal Q3 install
 async function loadJumpSample() {
-  for (const ext of ['mp3','wav','ogg']) {
+  audioStatus = 'loading';
+  for (const ext of ['wav','mp3','ogg']) {
     try {
       const r = await fetch(`sounds/jump.${ext}`);
-      if (!r.ok) continue;
+      if (!r.ok) { console.warn(`[audio] sounds/jump.${ext} → ${r.status}`); continue; }
       const ab = await r.arrayBuffer();
       jumpBuffer = await audioCtx.decodeAudioData(ab);
-      console.log(`[audio] loaded sounds/jump.${ext}`);
+      audioStatus = `file:${ext} ${jumpBuffer.duration.toFixed(2)}s ${jumpBuffer.numberOfChannels}ch`;
+      console.log(`[audio] loaded sounds/jump.${ext}, ${jumpBuffer.duration}s`);
       return;
-    } catch {/* try next ext */}
+    } catch (e) {
+      console.warn(`[audio] sounds/jump.${ext} failed:`, e.message);
+    }
   }
+  audioStatus = 'synth (file not loaded)';
 }
 function playJumpGrunt() {
   if (!audioCtx) return;
@@ -263,8 +269,10 @@ function playJumpGrunt() {
     g.gain.value = 0.85;
     src.connect(g).connect(audioCtx.destination);
     src.start();
+    if (!audioStatus.startsWith('file')) audioStatus = 'file (playing)';
     return;
   }
+  if (audioStatus !== 'loading') audioStatus = 'SYNTH';
   const t = audioCtx.currentTime;
   const out = audioCtx.destination;
   const dur = 0.30;
@@ -1109,7 +1117,7 @@ function frame() {
     const Vb1 = Math.hypot(bot1.vx, bot1.vy).toFixed(0);
     const Vb3 = Math.hypot(bot3.vx, bot3.vy).toFixed(0);
     const Vb5 = Math.hypot(bot5.vx, bot5.vy).toFixed(0);
-    dbg.textContent = `[${PHYS.name}] frame ${frameCount} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v me/b1/b3/b5=${Vme}/${Vb1}/${Vb3}/${Vb5}`;
+    dbg.textContent = `[${PHYS.name}] f${frameCount} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v=${Vme}/${Vb1}/${Vb3}/${Vb5} · audio: ${audioStatus}`;
   }
   requestAnimationFrame(frame);
 }
