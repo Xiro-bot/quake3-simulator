@@ -1221,25 +1221,33 @@ function renderFirstPerson(W, H) {
   // gaps and looked broken. The pads themselves carry the depth cues now
   // (cyan front edge + amber back edge, plus distance markers further down).
 
-  // ── Walls — fill is derived FROM the projected base+top edges in screen
-  // space, rather than re-running 3D polygon clipping on 4 corners. Because
-  // projectLine already clips the base and top edges identically (same fwd
-  // values, since they share x,y), their screen endpoints form a clean 2D
-  // quad with no chance of degenerating into a flickering shape.
+  // ── Walls — TWO sections per side so the geometry matches the collision.
+  //   Above z=0: regular corridor wall (slate, up to wallHeight).
+  //   Below z=0: lava-canyon wall (darker, lava-tinted, down to lava_depth).
+  // Both are solid in the collision model (x clamp ignores z), so we render
+  // both. A bright horizontal line at z=0 marks the pad-surface "lip".
   for (const side of [-halfW, halfW]) {
-    const botL = projectLine(side, yViewMin, 0, side, yViewMax, 0);
-    const topL = projectLine(side, yViewMin, TRACK.wallHeight, side, yViewMax, TRACK.wallHeight);
-    if (botL && topL) {
-      fillPoly([botL[0], botL[1], topL[1], topL[0]], '#30374a');
+    // Above-pad portion
+    const topBase = projectLine(side, yViewMin, 0, side, yViewMax, 0);
+    const topTop  = projectLine(side, yViewMin, TRACK.wallHeight, side, yViewMax, TRACK.wallHeight);
+    if (topBase && topTop) {
+      fillPoly([topBase[0], topBase[1], topTop[1], topTop[0]], '#30374a');
     }
-    if (botL) strokeLine(botL[0], botL[1], '#5d6470', 2);
-    if (topL) strokeLine(topL[0], topL[1], '#7d8490', 2);
-    // Vertical posts every 500 ups with colored cap
+    if (topTop) strokeLine(topTop[0], topTop[1], '#7d8490', 2);
+    // Below-pad portion (the lava-canyon wall the player slides down)
+    const lowBase = projectLine(side, yViewMin, -TRACK.lava_depth, side, yViewMax, -TRACK.lava_depth);
+    const lowTop  = projectLine(side, yViewMin, 0, side, yViewMax, 0);
+    if (lowBase && lowTop) {
+      fillPoly([lowBase[0], lowBase[1], lowTop[1], lowTop[0]], '#2a1815');
+    }
+    if (lowBase) strokeLine(lowBase[0], lowBase[1], '#5d3424', 1.5);
+    // Bright lip line at z=0 (the "ground level" along the wall)
+    if (topBase) strokeLine(topBase[0], topBase[1], '#c98a52', 2);
+    // Vertical posts every 500 ups with colored cap (above only)
     for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
       if (y < 0 || y > TRACK.length) continue;
       const post = projectLine(side, y, 0, side, y, TRACK.wallHeight);
       if (post) strokeLine(post[0], post[1], '#5d6470', 1.5);
-      // colored band at top
       const cap = projectLine(side, y - 20, TRACK.wallHeight, side, y + 20, TRACK.wallHeight);
       if (cap) strokeLine(cap[0], cap[1], '#58a6ff', 3);
     }
