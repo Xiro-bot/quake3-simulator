@@ -222,6 +222,63 @@ function resizeArena() {
 resizeArena();
 window.addEventListener('resize', resizeArena);
 
+// ───── Audio: synthesised "Sarge-style" jump grunt ─────
+// Three-layer synth — sub growl (low sawtooth, downward pitch sweep) +
+// band-passed white noise (the "breath") + a short body thump. No external
+// asset files: the game's actual Sarge sample is copyrighted, but this
+// approximates the low, gravelly "ugh!" timbre at jump time.
+let audioCtx = null;
+function ensureAudio() {
+  if (audioCtx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audioCtx = new AC();
+}
+function playJumpGrunt() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const out = audioCtx.destination;
+  // 1. Sub growl
+  const growl = audioCtx.createOscillator();
+  growl.type = 'sawtooth';
+  growl.frequency.setValueAtTime(130, t);
+  growl.frequency.exponentialRampToValueAtTime(68, t + 0.18);
+  const gGain = audioCtx.createGain();
+  gGain.gain.setValueAtTime(0, t);
+  gGain.gain.linearRampToValueAtTime(0.32, t + 0.015);
+  gGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+  growl.connect(gGain).connect(out);
+  // 2. Breath noise (bandpassed)
+  const noiseBuf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.22), audioCtx.sampleRate);
+  const nd = noiseBuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random()*2 - 1;
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = noiseBuf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(900, t);
+  filter.frequency.exponentialRampToValueAtTime(380, t + 0.16);
+  filter.Q.value = 2.4;
+  const nGain = audioCtx.createGain();
+  nGain.gain.setValueAtTime(0, t);
+  nGain.gain.linearRampToValueAtTime(0.18, t + 0.02);
+  nGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  noise.connect(filter).connect(nGain).connect(out);
+  // 3. Body thump (short sine click)
+  const thump = audioCtx.createOscillator();
+  thump.type = 'sine';
+  thump.frequency.setValueAtTime(60, t);
+  thump.frequency.exponentialRampToValueAtTime(35, t + 0.06);
+  const tGain = audioCtx.createGain();
+  tGain.gain.setValueAtTime(0, t);
+  tGain.gain.linearRampToValueAtTime(0.25, t + 0.005);
+  tGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+  thump.connect(tGain).connect(out);
+  // Start / stop
+  growl.start(t); noise.start(t); thump.start(t);
+  growl.stop(t + 0.22); noise.stop(t + 0.22); thump.stop(t + 0.1);
+}
+
 // ───── Procedural textures ─────
 // Offscreen lava tile: hot orange/yellow base with hot spots and dark veins.
 // Used as a repeating pattern fill, then animated by translating the pattern
@@ -722,6 +779,7 @@ function botStep(b, dt) {
 
 // ───── Input ─────
 arena.addEventListener('click', () => {
+  ensureAudio();
   if (!document.pointerLockElement) arena.requestPointerLock();
 });
 document.addEventListener('pointerlockchange', () => {
@@ -917,7 +975,9 @@ function frame() {
       sm: (keys.d ? 127 : 0) + (keys.a ? -127 : 0),
       jump: keys.space,  // auto-hop while held
     };
+    const wasGround = me.onGround;
     step(me, inputs, simDt);
+    if (wasGround && !me.onGround) playJumpGrunt();
     // Bots wait at the spawn until you press jump. The instant you do, reset
     // your race timer to 0 so all three start from the same t=0.
     if (!raceStarted && me.jumps > 0) {
