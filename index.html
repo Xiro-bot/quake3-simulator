@@ -228,8 +228,9 @@ window.addEventListener('resize', resizeArena);
 // asset files: the game's actual Sarge sample is copyrighted, but this
 // approximates the low, gravelly "ugh!" timbre at jump time.
 let audioCtx = null;
-let jumpBuffer = null;
-let audioStatus = 'idle';  // shown in the debug overlay so you can see what's playing
+let jumpBuffer = null;        // WebAudio AudioBuffer (fetch+decode path)
+let jumpAudioEl = null;       // HTMLAudio element (file:// fallback path)
+let audioStatus = 'idle';     // shown in the debug overlay so you can see what's playing
 function ensureAudio() {
   if (audioCtx) return;
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -244,34 +245,57 @@ function ensureAudio() {
 //   • for your own local copy: an extraction from your legal Q3 install
 async function loadJumpSample() {
   audioStatus = 'loading';
+  // Try 1: fetch + WebAudio decode (works over http/https, blocked by Safari/Chrome on file://).
   for (const ext of ['wav','mp3','ogg']) {
     try {
       const r = await fetch(`sounds/jump.${ext}`);
-      if (!r.ok) { console.warn(`[audio] sounds/jump.${ext} → ${r.status}`); continue; }
+      if (!r.ok) continue;
       const ab = await r.arrayBuffer();
       jumpBuffer = await audioCtx.decodeAudioData(ab);
-      audioStatus = `file:${ext} ${jumpBuffer.duration.toFixed(2)}s ${jumpBuffer.numberOfChannels}ch`;
-      console.log(`[audio] loaded sounds/jump.${ext}, ${jumpBuffer.duration}s`);
+      audioStatus = `file:${ext} ${jumpBuffer.duration.toFixed(2)}s (WebAudio)`;
+      console.log(`[audio] WebAudio loaded sounds/jump.${ext}`);
       return;
-    } catch (e) {
-      console.warn(`[audio] sounds/jump.${ext} failed:`, e.message);
-    }
+    } catch (e) { console.warn(`[audio] WebAudio ${ext} failed:`, e.message); }
+  }
+  // Try 2: HTMLAudioElement (works on file:// where fetch is blocked).
+  for (const ext of ['wav','mp3','ogg']) {
+    try {
+      const audio = new Audio(`sounds/jump.${ext}`);
+      audio.preload = 'auto';
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('timeout')), 4000);
+        audio.addEventListener('canplaythrough', () => { clearTimeout(t); resolve(); }, { once: true });
+        audio.addEventListener('error', () => { clearTimeout(t); reject(new Error('audio error')); }, { once: true });
+        audio.load();
+      });
+      jumpAudioEl = audio;
+      audioStatus = `file:${ext} ${audio.duration.toFixed(2)}s (HTMLAudio)`;
+      console.log(`[audio] HTMLAudio loaded sounds/jump.${ext}`);
+      return;
+    } catch (e) { console.warn(`[audio] HTMLAudio ${ext} failed:`, e.message); }
   }
   audioStatus = 'synth (file not loaded)';
 }
 function playJumpGrunt() {
-  if (!audioCtx) return;
-  // Real recording wins if one was loaded; synth is only the fallback.
-  if (jumpBuffer) {
+  // 1. WebAudio buffer (preferred — overlapping plays, no gesture issues).
+  if (audioCtx && jumpBuffer) {
     const src = audioCtx.createBufferSource();
     src.buffer = jumpBuffer;
     const g = audioCtx.createGain();
     g.gain.value = 0.85;
     src.connect(g).connect(audioCtx.destination);
     src.start();
-    if (!audioStatus.startsWith('file')) audioStatus = 'file (playing)';
     return;
   }
+  // 2. HTMLAudio fallback (file:// path). Clone so overlapping jumps stack.
+  if (jumpAudioEl) {
+    const clone = jumpAudioEl.cloneNode();
+    clone.volume = 0.85;
+    clone.play().catch(() => {});
+    return;
+  }
+  // 3. Synth only if no file is available at all.
+  if (!audioCtx) return;
   if (audioStatus !== 'loading') audioStatus = 'SYNTH';
   const t = audioCtx.currentTime;
   const out = audioCtx.destination;
