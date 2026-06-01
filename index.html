@@ -500,6 +500,11 @@ function step(e, inputs, dt) {
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
+  // Corridor walls are solid — clamp x and zero the normal-component of
+  // velocity (Q3 slide: lose vx, keep vy so you slide along the wall).
+  const halfW_w = TRACK.width / 2;
+  if (e.x < -halfW_w) { e.x = -halfW_w; if (e.vx < 0) e.vx = 0; }
+  if (e.x >  halfW_w) { e.x =  halfW_w; if (e.vx > 0) e.vx = 0; }
   // Walked off a pad → start falling. Don't change z yet; gravity will pull
   // it down next frame.
   if (e.onGround && !onPad(e.x, e.y)) {
