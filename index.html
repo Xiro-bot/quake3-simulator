@@ -863,7 +863,11 @@ function botStep(b, dt) {
 // ───── Input ─────
 arena.addEventListener('click', () => {
   ensureAudio();
-  if (!document.pointerLockElement) arena.requestPointerLock();
+  // iOS Safari and some mobile browsers don't implement pointer lock — guard
+  // the call so the click handler doesn't throw and audio init still runs.
+  if (typeof arena.requestPointerLock === 'function' && !document.pointerLockElement) {
+    arena.requestPointerLock();
+  }
 });
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === arena;
