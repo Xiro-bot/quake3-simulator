@@ -1041,8 +1041,19 @@ function showErr(msg) {
   if (errBar) { errBar.textContent = msg; errBar.style.display = 'block'; }
   console.error(msg);
 }
-window.addEventListener('error', e => showErr(`[onerror] ${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
-window.addEventListener('unhandledrejection', e => showErr(`[unhandled] ${e.reason}`));
+window.addEventListener('error', e => {
+  // Skip the CORS-masked "Script error. @ :0:0" that iOS Safari fires for
+  // resource-load errors (audio/image) — no actionable info, just noise.
+  if (!e.message || e.message === 'Script error.' || (!e.filename && !e.lineno)) {
+    console.warn('[error]', e);
+    return;
+  }
+  showErr(`[onerror] ${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`);
+});
+window.addEventListener('unhandledrejection', e => {
+  console.warn('[unhandled]', e.reason);
+  if (e.reason && e.reason.message) showErr(`[unhandled] ${e.reason.message}`);
+});
 function frame() {
   try {
     // Sanity fill: bright magenta — if you ever see this, render() crashed before drawing anything.
