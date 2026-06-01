@@ -253,19 +253,35 @@ const TRACK = {
   wallHeight: 120,
   startY: 0,
   markerStep: 500,      // distance line every 500 ups
-  // Pad layout — sized so bot7/bot8 (slowest, +30% off θ*) clear every gap.
-  pad_length:   400,    // each pad runs this many ups along +y
-  pad_gap:      150,    // lava gap between pads (bot7 first jump d ≈ 195)
-  pad_thickness: 80,    // visible side height of the pad slab
+  pad_thickness: 80,    // visible side height of the pad slab (Z extent)
   lava_depth:   120,    // z < −lava_depth → "fell in lava"
 };
-const PAD_PERIOD = TRACK.pad_length + TRACK.pad_gap;
-// Is (x,y) over a solid pad surface? Used by the landing check.
+// Pad layout — start pad at the spawn line + a pad centered on each bot8
+// landing y-position taken from the headless sim (/tmp/bot8-landings.js).
+// Same pad length and depth everywhere; only the SPACING is data-driven, so
+// bot8 (the slowest +30%-off-θ bot) lands on the centre of every pad and
+// any faster bot clears the gaps trivially.
+const PAD_RADIUS = 75;  // half-length along +y → pad length = 150 ups
+const BOT8_LANDINGS = [
+  267, 592.7, 979.2, 1420.3, 1907.8, 2438.9, 3009.2, 3617.1, 4259.6, 4935.3,
+  5642.3, 6379.8, 7146.1, 7940.2, 8761.2, 9608.5, 10481, 11377.9, 12298.7,
+  13243, 14210, 15199.1, 16209.8, 17242, 18295, 19368.2, 20461.5, 21574.6,
+  22707, 23858.2, 25028.2, 26216.6, 27423.2, 28647.5, 29889.4,
+];
+// Start pad at y=75 (covers [0, 150]) so the spawn position is on a pad.
+const PAD_CENTERS = [75, ...BOT8_LANDINGS];
 function onPad(x, y) {
   if (x < -TRACK.width/2 || x > TRACK.width/2) return false;
   if (y < 0 || y > TRACK.length) return false;
-  const yMod = y % PAD_PERIOD;
-  return yMod <= TRACK.pad_length;  // pad surface is [0, pad_length] inclusive
+  // Binary search for the first centre >= y, then check it and the previous.
+  let lo = 0, hi = PAD_CENTERS.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (PAD_CENTERS[mid] < y) lo = mid + 1; else hi = mid;
+  }
+  if (lo < PAD_CENTERS.length && Math.abs(PAD_CENTERS[lo] - y) <= PAD_RADIUS) return true;
+  if (lo > 0 && Math.abs(PAD_CENTERS[lo - 1] - y) <= PAD_RADIUS) return true;
+  return false;
 }
 const EYE_HEIGHT = 26;  // Q3 player view height when standing
 const FOV_DEG = 110;    // defrag-typical horizontal FOV
@@ -1120,18 +1136,16 @@ function renderFirstPerson(W, H) {
   // Painter's algorithm: render furthest-from-camera pads first so closer
   // ones cover them. Otherwise the back of a far pad bleeds through the
   // front of the near pad and the whole thing looks transparent.
-  const padStartK = Math.max(0, Math.floor(yViewMin / PAD_PERIOD));
-  const padEndK   = Math.min(Math.ceil(TRACK.length / PAD_PERIOD), Math.ceil(yViewMax / PAD_PERIOD));
   const padOrder = [];
-  for (let k = padStartK; k <= padEndK; k++) {
-    const yMid = k * PAD_PERIOD + TRACK.pad_length / 2;
-    padOrder.push({ k, dist: Math.abs(yMid - cam.y) });
+  for (let k = 0; k < PAD_CENTERS.length; k++) {
+    const c = PAD_CENTERS[k];
+    if (c + PAD_RADIUS < yViewMin || c - PAD_RADIUS > yViewMax) continue;
+    padOrder.push({ k, dist: Math.abs(c - cam.y) });
   }
   padOrder.sort((a, b) => b.dist - a.dist);
   for (const { k } of padOrder) {
-    const y1 = k * PAD_PERIOD;
-    const y2 = y1 + TRACK.pad_length;
-    if (y2 < yViewMin || y1 > yViewMax) continue;
+    const y1 = PAD_CENTERS[k] - PAD_RADIUS;
+    const y2 = PAD_CENTERS[k] + PAD_RADIUS;
     // Front face (looking down +y, the near face of pad k is at y=y1)
     {
       const f = projPolygonClipped([
