@@ -1227,14 +1227,6 @@ function renderFirstPerson(W, H) {
       ]);
       fillPoly(t, '#7b8696');
     }
-    // Dashed centerline stripe along +y, on the pad surface (cosmetic).
-    const cstripe = projectLine(0, y1 + 10, 0.4, 0, y2 - 10, 0.4);
-    if (cstripe) strokeLine(cstripe[0], cstripe[1], 'rgba(255,255,255,0.55)', 2);
-    // Glow stripes on the front/back edges for depth pop.
-    const edge = projectLine(-halfW, y1, 0.5, halfW, y1, 0.5);
-    if (edge) strokeLine(edge[0], edge[1], '#67e8f9', 4);
-    const edge2 = projectLine(-halfW, y2, 0.5, halfW, y2, 0.5);
-    if (edge2) strokeLine(edge2[0], edge2[1], '#fbbf24', 3);
   }
 
   // Centerline / lane / cross-line decorations removed — they crossed the
