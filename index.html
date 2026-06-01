@@ -253,8 +253,8 @@ const TRACK = {
   wallHeight: 120,
   startY: 0,
   markerStep: 500,      // distance line every 500 ups
-  pad_thickness: 80,    // visible side height of the pad slab (Z extent)
-  lava_depth:   120,    // z < −lava_depth → "fell in lava"
+  pad_thickness: 200,   // visible side height of the pad slab (Z extent)
+  lava_depth:   240,    // z < −lava_depth → "fell in lava"
 };
 // Pad layout — start pad at the spawn line + a pad centered on each bot8
 // landing y-position taken from the headless sim (/tmp/bot8-landings.js).
@@ -1146,35 +1146,41 @@ function renderFirstPerson(W, H) {
   for (const { k } of padOrder) {
     const y1 = PAD_CENTERS[k] - PAD_RADIUS;
     const y2 = PAD_CENTERS[k] + PAD_RADIUS;
-    // Front face (looking down +y, the near face of pad k is at y=y1)
-    {
+    // Within a single pad: also painter-sort the front/back faces so the
+    // face closer to the camera is drawn LAST (occludes the further one).
+    const frontCloser = Math.abs(y1 - cam.y) < Math.abs(y2 - cam.y);
+    const drawFront = () => {
       const f = projPolygonClipped([
         [-halfW, y1, 0], [halfW, y1, 0],
         [halfW, y1, -TRACK.pad_thickness], [-halfW, y1, -TRACK.pad_thickness],
       ]);
-      fillPoly(f, '#3d4451');
-    }
-    // Back face (at y=y2)
-    {
+      fillPoly(f, '#54637a');
+    };
+    const drawBack = () => {
       const f = projPolygonClipped([
         [-halfW, y2, 0], [halfW, y2, 0],
         [halfW, y2, -TRACK.pad_thickness], [-halfW, y2, -TRACK.pad_thickness],
       ]);
-      fillPoly(f, '#2d3340');
-    }
-    // Top surface
+      fillPoly(f, '#42505f');
+    };
+    if (frontCloser) { drawBack(); drawFront(); }
+    else             { drawFront(); drawBack(); }
+    // Top surface — brighter slate so it reads as a solid floor over the lava.
     {
       const t = projPolygonClipped([
         [-halfW, y1, 0], [halfW, y1, 0],
         [halfW, y2, 0],  [-halfW, y2, 0],
       ]);
-      fillPoly(t, '#1f2733');
+      fillPoly(t, '#7b8696');
     }
-    // Glow stripe on front edge (cyan) for pop
+    // Dashed centerline stripe along +y, on the pad surface (cosmetic).
+    const cstripe = projectLine(0, y1 + 10, 0.4, 0, y2 - 10, 0.4);
+    if (cstripe) strokeLine(cstripe[0], cstripe[1], 'rgba(255,255,255,0.55)', 2);
+    // Glow stripes on the front/back edges for depth pop.
     const edge = projectLine(-halfW, y1, 0.5, halfW, y1, 0.5);
-    if (edge) strokeLine(edge[0], edge[1], '#67e8f9', 3);
+    if (edge) strokeLine(edge[0], edge[1], '#67e8f9', 4);
     const edge2 = projectLine(-halfW, y2, 0.5, halfW, y2, 0.5);
-    if (edge2) strokeLine(edge2[0], edge2[1], '#fbbf24', 2);
+    if (edge2) strokeLine(edge2[0], edge2[1], '#fbbf24', 3);
   }
 
   // Centerline / lane / cross-line decorations removed — they crossed the
