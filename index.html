@@ -528,6 +528,33 @@ function step(e, inputs, dt) {
   const wallLimit = TRACK.width / 2 - PLAYER_RADIUS;
   if (e.x < -wallLimit) { e.x = -wallLimit; if (e.vx < 0) e.vx = 0; }
   if (e.x >  wallLimit) { e.x =  wallLimit; if (e.vx > 0) e.vx = 0; }
+  // Pad vertical faces — solid for any entity whose z is in the slab range.
+  // Without this you fly horizontally through the next pad's front face after
+  // a short jump. Binary-search the nearest pad and push y back to whichever
+  // face edge is closer; zero the normal-component of vy (Q3 slide), keep vx.
+  if (!e.fell && e.z < 0 && e.z > -TRACK.pad_thickness) {
+    let lo = 0, hi = PAD_CENTERS.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (PAD_CENTERS[mid] < e.y) lo = mid + 1; else hi = mid;
+    }
+    for (const idx of [lo, lo - 1]) {
+      if (idx < 0 || idx >= PAD_CENTERS.length) continue;
+      const c = PAD_CENTERS[idx];
+      const yLo = c - PAD_RADIUS - PLAYER_RADIUS;  // front face (with radius)
+      const yHi = c + PAD_RADIUS + PLAYER_RADIUS;  // back face
+      if (e.y > yLo && e.y < yHi) {
+        if (e.y - yLo < yHi - e.y) {
+          e.y = yLo;
+          if (e.vy > 0) e.vy = 0;
+        } else {
+          e.y = yHi;
+          if (e.vy < 0) e.vy = 0;
+        }
+        break;
+      }
+    }
+  }
   // Walked off a pad → start falling. Don't change z yet; gravity will pull
   // it down next frame.
   if (e.onGround && !onPad(e.x, e.y)) {
