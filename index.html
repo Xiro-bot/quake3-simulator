@@ -1422,21 +1422,6 @@ function renderFirstPerson(W, H) {
       if (tClipped.length >= 3) {
         fillPoly(tClipped, '#7b8696');
       }
-      // Caution-tape edges — thicker hazard-style band with shorter chevrons
-      // so the alternation reads even when the camera is far away. Two
-      // overlapping strokes per segment for the chevron drop-shadow look.
-      const TAPE_LEN = 18;
-      for (const yEdge of [y1, y2]) {
-        for (let xs = -halfW; xs < halfW; xs += TAPE_LEN) {
-          const xe = Math.min(xs + TAPE_LEN, halfW);
-          const isYellow = ((xs / TAPE_LEN) | 0) % 2 === 0;
-          const seg = projectLine(xs, yEdge, 0.5, xe, yEdge, 0.5);
-          if (seg) {
-            strokeLine(seg[0], seg[1], 'rgba(0,0,0,0.55)', 12);                    // outline
-            strokeLine(seg[0], seg[1], isYellow ? '#facc15' : '#ef4444', 8);       // main band
-          }
-        }
-      }
     } else if (eyeZ < -TRACK.pad_thickness) {
       const b = projPolygonClipped([
         [-halfW, y1, -TRACK.pad_thickness], [halfW, y1, -TRACK.pad_thickness],
