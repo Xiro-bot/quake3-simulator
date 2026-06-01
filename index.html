@@ -1345,28 +1345,15 @@ function renderFirstPerson(W, H) {
     for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
     ctx.closePath(); ctx.fill();
   }
-  // Lava — procedurally tiled and scrolled. The tile is repeated in screen
-  // space (canvas can't perspective-correct the texture), but the scroll
-  // animation + the gap between pads keeps it from reading as wallpaper.
+  // Gap floor — solid near-black "space void". Falling reads as falling into
+  // empty darkness rather than lava. Death-threshold semantics unchanged.
   {
     const z = -TRACK.pad_thickness;
     const lavaProj = projPolygonClipped([
       [-halfW, yViewMin, z], [halfW, yViewMin, z],
       [halfW, yViewMax, z],  [-halfW, yViewMax, z],
     ]);
-    const clipped = clipPolyToViewport(lavaProj);
-    if (clipped.length >= 3) {
-      const lavaPat = ctx.createPattern(lavaTile, 'repeat');
-      // Slow scroll for "convection". DOMMatrix is supported in modern Safari.
-      const m = new DOMMatrix().translate((tNow * 22) % 256, (tNow * 14) % 256);
-      lavaPat.setTransform(m);
-      ctx.fillStyle = lavaPat;
-      ctx.beginPath();
-      ctx.moveTo(clipped[0].x, clipped[0].y);
-      for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
-      ctx.closePath();
-      ctx.fill();
-    }
+    fillPoly(lavaProj, '#020308');
   }
   // ── Walls — drawn BEFORE pads so pad polygons cover walls in the centre
   // of the corridor. The wall fill projects to a big trapezoid in screen
