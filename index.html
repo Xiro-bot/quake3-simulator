@@ -389,7 +389,18 @@ const lavaTile = (() => {
   }
   return c;
 })();
-// Brushed-metal tile for pad tops: short horizontal grain lines.
+// Aluminum texture loaded from textures/aluminum.jpg (CC0, see textures/CREDITS.md).
+// When the image arrives, swap `metalPatternSource` to point at it; until
+// then we use the procedural metalTile so the trainer is functional from
+// the first frame and degrades gracefully if the file is missing.
+let metalPatternSource = null;
+{
+  const img = new Image();
+  img.onload = () => { metalPatternSource = img; };
+  img.onerror = () => { /* keep procedural fallback */ };
+  img.src = 'textures/aluminum.jpg';
+}
+// Brushed-metal procedural fallback tile for pad tops.
 const metalTile = (() => {
   const c = document.createElement('canvas');
   c.width = 64; c.height = 64;
@@ -1422,7 +1433,10 @@ function renderFirstPerson(W, H) {
       ]);
       const tClipped = clipPolyToViewport(t);
       if (tClipped.length >= 3) {
-        const metalPat = ctx.createPattern(metalTile, 'repeat');
+        // Prefer the real aluminium photo if it's loaded; fall back to the
+        // procedural grain tile otherwise.
+        const src = (metalPatternSource && metalPatternSource.complete) ? metalPatternSource : metalTile;
+        const metalPat = ctx.createPattern(src, 'repeat');
         ctx.fillStyle = metalPat;
         ctx.beginPath();
         ctx.moveTo(tClipped[0].x, tClipped[0].y);
@@ -1430,14 +1444,19 @@ function renderFirstPerson(W, H) {
         ctx.closePath();
         ctx.fill();
       }
-      // Caution-tape edges (yellow + red stripes along front + back top edges)
-      const TAPE_LEN = 25;
+      // Caution-tape edges — thicker hazard-style band with shorter chevrons
+      // so the alternation reads even when the camera is far away. Two
+      // overlapping strokes per segment for the chevron drop-shadow look.
+      const TAPE_LEN = 18;
       for (const yEdge of [y1, y2]) {
         for (let xs = -halfW; xs < halfW; xs += TAPE_LEN) {
           const xe = Math.min(xs + TAPE_LEN, halfW);
           const isYellow = ((xs / TAPE_LEN) | 0) % 2 === 0;
           const seg = projectLine(xs, yEdge, 0.5, xe, yEdge, 0.5);
-          if (seg) strokeLine(seg[0], seg[1], isYellow ? '#fbbf24' : '#dc2626', 6);
+          if (seg) {
+            strokeLine(seg[0], seg[1], 'rgba(0,0,0,0.55)', 12);                    // outline
+            strokeLine(seg[0], seg[1], isYellow ? '#facc15' : '#ef4444', 8);       // main band
+          }
         }
       }
     } else if (eyeZ < -TRACK.pad_thickness) {
