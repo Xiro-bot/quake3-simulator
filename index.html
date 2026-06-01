@@ -1166,6 +1166,26 @@ function renderFirstPerson(W, H) {
       fillPoly(proj, `rgb(${r}, ${g}, 18)`);
     }
   }
+  // ── Walls — drawn BEFORE pads so pad polygons cover walls in the centre
+  // of the corridor. The wall fill projects to a big trapezoid in screen
+  // (foreshortening), and if drawn after, it'd overdraw the right/left
+  // halves of every pad face and make pads look flat.
+  for (const side of [-halfW, halfW]) {
+    const botL = projectLine(side, yViewMin, -TRACK.lava_depth, side, yViewMax, -TRACK.lava_depth);
+    const topL = projectLine(side, yViewMin, TRACK.wallHeight,   side, yViewMax, TRACK.wallHeight);
+    if (botL && topL) {
+      fillPoly([botL[0], botL[1], topL[1], topL[0]], '#30374a');
+    }
+    if (botL) strokeLine(botL[0], botL[1], '#5d6470', 2);
+    if (topL) strokeLine(topL[0], topL[1], '#7d8490', 2);
+    for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
+      if (y < 0 || y > TRACK.length) continue;
+      const post = projectLine(side, y, -TRACK.lava_depth, side, y, TRACK.wallHeight);
+      if (post) strokeLine(post[0], post[1], '#5d6470', 1.5);
+      const cap = projectLine(side, y - 20, TRACK.wallHeight, side, y + 20, TRACK.wallHeight);
+      if (cap) strokeLine(cap[0], cap[1], '#58a6ff', 3);
+    }
+  }
   // Each pad — bright top + visible front/back faces so depth reads.
   // Painter's algorithm: render furthest-from-camera pads first so closer
   // ones cover them. Otherwise the back of a far pad bleeds through the
@@ -1221,25 +1241,6 @@ function renderFirstPerson(W, H) {
   // gaps and looked broken. The pads themselves carry the depth cues now
   // (cyan front edge + amber back edge, plus distance markers further down).
 
-  // ── Walls — one fill per side, extended down to lava floor so the
-  // visible wall matches the collision (which is z-agnostic).
-  for (const side of [-halfW, halfW]) {
-    const botL = projectLine(side, yViewMin, -TRACK.lava_depth, side, yViewMax, -TRACK.lava_depth);
-    const topL = projectLine(side, yViewMin, TRACK.wallHeight,   side, yViewMax, TRACK.wallHeight);
-    if (botL && topL) {
-      fillPoly([botL[0], botL[1], topL[1], topL[0]], '#30374a');
-    }
-    if (botL) strokeLine(botL[0], botL[1], '#5d6470', 2);
-    if (topL) strokeLine(topL[0], topL[1], '#7d8490', 2);
-    // Vertical posts every 500 ups with colored cap
-    for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
-      if (y < 0 || y > TRACK.length) continue;
-      const post = projectLine(side, y, -TRACK.lava_depth, side, y, TRACK.wallHeight);
-      if (post) strokeLine(post[0], post[1], '#5d6470', 1.5);
-      const cap = projectLine(side, y - 20, TRACK.wallHeight, side, y + 20, TRACK.wallHeight);
-      if (cap) strokeLine(cap[0], cap[1], '#58a6ff', 3);
-    }
-  }
   // ── Distance markers — only on pad surfaces (skip lava gaps). ──
   for (let y = Math.floor(yViewMin/500)*500; y <= yViewMax; y += 500) {
     if (y <= 0 || y > TRACK.length) continue;
