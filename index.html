@@ -1452,37 +1452,44 @@ function renderFirstPerson(W, H) {
       ]);
       const tClipped = clipPolyToViewport(t);
       if (tClipped.length >= 3) {
-        // Prefer the real aluminium photo if it's loaded; fall back to the
-        // procedural grain tile otherwise.
         const src = (metalPatternSource && metalPatternSource.complete) ? metalPatternSource : metalTile;
-        const metalPat = ctx.createPattern(src, 'repeat');
-        // Affine plane-mapping: project the pad's 3 reference corners and
-        // build a 2D transform such that the texture's local axes line up
-        // with the pad's world-x and world-y axes in screen space. Not full
-        // perspective correction (no per-pixel divide), but the texture now
-        // follows the surface plane instead of tiling in screen space.
-        const tile_world_u = 200;  // ups across pad → one texture repeat (~3 across width)
-        const tile_world_v = 200;  // ups along pad   → one texture repeat
         const p0 = project(-halfW, y1, 0);
         const p1 = project( halfW, y1, 0);
         const p3 = project(-halfW, y2, 0);
+        // Plane-mapping via ctx.transform + clip + drawImage. The transform
+        // makes "world (x,y) on the pad surface" the local coord system, so
+        // drawing the texture image at its natural size and tiling it
+        // produces a properly surface-aligned fill (affine, not full
+        // perspective — close enough for short pads).
         if (p0 && p1 && p3) {
-          const dux = (p1.x - p0.x) / (2 * halfW) * tile_world_u;
-          const duy = (p1.y - p0.y) / (2 * halfW) * tile_world_u;
-          const dvx = (p3.x - p0.x) / (y2 - y1)   * tile_world_v;
-          const dvy = (p3.y - p0.y) / (y2 - y1)   * tile_world_v;
-          metalPat.setTransform(new DOMMatrix([
-            dux / tile_world_u, duy / tile_world_u,
-            dvx / tile_world_v, dvy / tile_world_v,
-            p0.x, p0.y,
-          ]));
+          // Affine: (worldX_offset_from_p0, worldY_offset_from_p0) → canvas
+          // dux, duy = canvas delta per world-unit-x; dvx, dvy = per world-unit-y.
+          const dux = (p1.x - p0.x) / (2 * halfW);
+          const duy = (p1.y - p0.y) / (2 * halfW);
+          const dvx = (p3.x - p0.x) / (y2 - y1);
+          const dvy = (p3.y - p0.y) / (y2 - y1);
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(tClipped[0].x, tClipped[0].y);
+          for (let k = 1; k < tClipped.length; k++) ctx.lineTo(tClipped[k].x, tClipped[k].y);
+          ctx.closePath();
+          ctx.clip();
+          // Now the local coords map to the surface plane in screen space.
+          ctx.transform(dux, duy, dvx, dvy, p0.x, p0.y);
+          // Tile the image across the pad's full world extent. Texture is
+          // sized at TILE world-units per image so the grain isn't tiny.
+          const TILE = 200;
+          const nU = Math.ceil((2*halfW) / TILE);
+          const nV = Math.ceil((y2 - y1) / TILE);
+          for (let i = 0; i < nU; i++) {
+            for (let j = 0; j < nV; j++) {
+              ctx.drawImage(src, i * TILE, j * TILE, TILE, TILE);
+            }
+          }
+          ctx.restore();
+        } else {
+          fillPoly(tClipped, '#5e6a78');
         }
-        ctx.fillStyle = metalPat;
-        ctx.beginPath();
-        ctx.moveTo(tClipped[0].x, tClipped[0].y);
-        for (let k = 1; k < tClipped.length; k++) ctx.lineTo(tClipped[k].x, tClipped[k].y);
-        ctx.closePath();
-        ctx.fill();
       }
       // Caution-tape edges — thicker hazard-style band with shorter chevrons
       // so the alternation reads even when the camera is far away. Two
