@@ -222,6 +222,67 @@ function resizeArena() {
 resizeArena();
 window.addEventListener('resize', resizeArena);
 
+// ───── Procedural textures ─────
+// Offscreen lava tile: hot orange/yellow base with hot spots and dark veins.
+// Used as a repeating pattern fill, then animated by translating the pattern
+// transform each frame for a slow "convection" effect.
+const lavaTile = (() => {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const cx = c.getContext('2d');
+  cx.fillStyle = '#7a1f05';
+  cx.fillRect(0, 0, 256, 256);
+  // Bright hot spots
+  for (let i = 0; i < 50; i++) {
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const r = 6 + Math.random() * 32;
+    const g = cx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0,   '#ffe48a');
+    g.addColorStop(0.3, '#ff8c2a');
+    g.addColorStop(1,   'rgba(122,31,5,0)');
+    cx.fillStyle = g;
+    cx.beginPath(); cx.arc(x, y, r, 0, Math.PI*2); cx.fill();
+  }
+  // Dark cooled-magma veins
+  cx.strokeStyle = 'rgba(15, 3, 0, 0.85)';
+  cx.lineWidth = 2;
+  for (let i = 0; i < 10; i++) {
+    cx.beginPath();
+    let vx = Math.random()*256, vy = Math.random()*256;
+    cx.moveTo(vx, vy);
+    for (let j = 0; j < 7; j++) {
+      vx += (Math.random()-0.5)*70;
+      vy += (Math.random()-0.5)*70;
+      cx.lineTo(vx, vy);
+    }
+    cx.stroke();
+  }
+  return c;
+})();
+// Brushed-metal tile for pad tops: short horizontal grain lines.
+const metalTile = (() => {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const cx = c.getContext('2d');
+  cx.fillStyle = '#5e6a78';
+  cx.fillRect(0, 0, 64, 64);
+  for (let y = 0; y < 64; y += 1) {
+    const v = 0.85 + 0.3 * Math.sin(y * 4.7 + 0.7);
+    const r = Math.round(94 * v), g = Math.round(106 * v), b = Math.round(120 * v);
+    cx.fillStyle = `rgba(${r},${g},${b},0.55)`;
+    cx.fillRect(0, y, 64, 1);
+  }
+  // A few darker scratches
+  cx.strokeStyle = 'rgba(0,0,0,0.18)';
+  cx.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    const y = Math.random() * 64;
+    cx.beginPath(); cx.moveTo(0, y); cx.lineTo(64, y + (Math.random()-0.5)*2); cx.stroke();
+  }
+  return c;
+})();
+
 // ───── Physics profiles ─────
 // VQ3 = stock Q3 / defrag VQ3 mode.
 // CPM = CPMA / defrag CPM mode. Adds airstop, strafe-only accel, and air
@@ -1141,29 +1202,27 @@ function renderFirstPerson(W, H) {
     for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
     ctx.closePath(); ctx.fill();
   }
-  // Lava — rendered at the SAME z as the bottom of the pad slabs so there's
-  // no see-through gap between "pad bottom" and "lava surface". The death
-  // threshold (TRACK.lava_depth) stays deeper, so the player visibly sinks
-  // a bit before the restart triggers.
+  // Lava — procedurally tiled and scrolled. The tile is repeated in screen
+  // space (canvas can't perspective-correct the texture), but the scroll
+  // animation + the gap between pads keeps it from reading as wallpaper.
   {
     const z = -TRACK.pad_thickness;
     const lavaProj = projPolygonClipped([
       [-halfW, yViewMin, z], [halfW, yViewMin, z],
       [halfW, yViewMax, z],  [-halfW, yViewMax, z],
     ]);
-    fillPoly(lavaProj, '#b13409');
-    // Animated pulse stripes — alternating bright cells every 200 ups.
-    const pulse = (Math.sin(tNow * 1.5) + 1) * 0.5;
-    for (let y = Math.floor(yViewMin/200)*200; y < yViewMax; y += 200) {
-      const y1 = Math.max(yViewMin, y), y2 = Math.min(yViewMax, y + 200);
-      if (((y/200) | 0) % 2 === 0) continue;
-      const proj = projPolygonClipped([
-        [-halfW, y1, z], [halfW, y1, z],
-        [halfW, y2, z],  [-halfW, y2, z],
-      ]);
-      const r = Math.round(220 + 30*pulse);
-      const g = Math.round(80 + 30*pulse);
-      fillPoly(proj, `rgb(${r}, ${g}, 18)`);
+    const clipped = clipPolyToViewport(lavaProj);
+    if (clipped.length >= 3) {
+      const lavaPat = ctx.createPattern(lavaTile, 'repeat');
+      // Slow scroll for "convection". DOMMatrix is supported in modern Safari.
+      const m = new DOMMatrix().translate((tNow * 22) % 256, (tNow * 14) % 256);
+      lavaPat.setTransform(m);
+      ctx.fillStyle = lavaPat;
+      ctx.beginPath();
+      ctx.moveTo(clipped[0].x, clipped[0].y);
+      for (let k = 1; k < clipped.length; k++) ctx.lineTo(clipped[k].x, clipped[k].y);
+      ctx.closePath();
+      ctx.fill();
     }
   }
   // ── Walls — drawn BEFORE pads so pad polygons cover walls in the centre
@@ -1220,17 +1279,35 @@ function renderFirstPerson(W, H) {
     if (frontCloser) { drawBack(); drawFront(); }
     else             { drawFront(); drawBack(); }
     // Backface-cull the top and bottom faces:
-    //   eye above pad surface (z>0)         → draw TOP, hide BOTTOM
-    //   eye below pad bottom (z<-thickness) → draw BOTTOM, hide TOP
-    //   eye in the slab middle              → hide both; only front/back
-    //                                          cliff faces are visible
+    //   eye above pad surface (z>0)         → draw TOP (brushed metal)
+    //   eye below pad bottom (z<-thickness) → draw BOTTOM (dark plate)
+    //   eye in the slab middle              → only front/back cliff faces
     const eyeZ = cam.z + EYE_HEIGHT;
     if (eyeZ > 0) {
       const t = projPolygonClipped([
         [-halfW, y1, 0], [halfW, y1, 0],
         [halfW, y2, 0],  [-halfW, y2, 0],
       ]);
-      fillPoly(t, '#7b8696');
+      const tClipped = clipPolyToViewport(t);
+      if (tClipped.length >= 3) {
+        const metalPat = ctx.createPattern(metalTile, 'repeat');
+        ctx.fillStyle = metalPat;
+        ctx.beginPath();
+        ctx.moveTo(tClipped[0].x, tClipped[0].y);
+        for (let k = 1; k < tClipped.length; k++) ctx.lineTo(tClipped[k].x, tClipped[k].y);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // Caution-tape edges (yellow + red stripes along front + back top edges)
+      const TAPE_LEN = 25;
+      for (const yEdge of [y1, y2]) {
+        for (let xs = -halfW; xs < halfW; xs += TAPE_LEN) {
+          const xe = Math.min(xs + TAPE_LEN, halfW);
+          const isYellow = ((xs / TAPE_LEN) | 0) % 2 === 0;
+          const seg = projectLine(xs, yEdge, 0.5, xe, yEdge, 0.5);
+          if (seg) strokeLine(seg[0], seg[1], isYellow ? '#fbbf24' : '#dc2626', 6);
+        }
+      }
     } else if (eyeZ < -TRACK.pad_thickness) {
       const b = projPolygonClipped([
         [-halfW, y1, -TRACK.pad_thickness], [halfW, y1, -TRACK.pad_thickness],
