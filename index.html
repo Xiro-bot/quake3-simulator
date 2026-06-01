@@ -426,10 +426,18 @@ const lavaTile = (() => {
 // then we use the procedural metalTile so the trainer is functional from
 // the first frame and degrades gracefully if the file is missing.
 let metalPatternSource = null;
+let metalStatus = 'loading';
 {
   const img = new Image();
-  img.onload = () => { metalPatternSource = img; };
-  img.onerror = () => { /* keep procedural fallback */ };
+  img.onload = () => {
+    metalPatternSource = img;
+    metalStatus = `image ${img.naturalWidth}x${img.naturalHeight}`;
+    console.log(`[texture] loaded textures/aluminum.jpg ${img.naturalWidth}x${img.naturalHeight}`);
+  };
+  img.onerror = (e) => {
+    metalStatus = 'image failed (procedural fallback)';
+    console.warn('[texture] aluminum.jpg failed:', e);
+  };
   img.src = 'textures/aluminum.jpg';
 }
 // Brushed-metal procedural fallback tile for pad tops.
@@ -1141,7 +1149,7 @@ function frame() {
     const Vb1 = Math.hypot(bot1.vx, bot1.vy).toFixed(0);
     const Vb3 = Math.hypot(bot3.vx, bot3.vy).toFixed(0);
     const Vb5 = Math.hypot(bot5.vx, bot5.vy).toFixed(0);
-    dbg.textContent = `[${PHYS.name}] f${frameCount} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v=${Vme}/${Vb1}/${Vb3}/${Vb5} · audio: ${audioStatus}`;
+    dbg.textContent = `[${PHYS.name}] f${frameCount} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v=${Vme}/${Vb1}/${Vb3}/${Vb5} · audio:${audioStatus} · tex:${metalStatus}`;
   }
   requestAnimationFrame(frame);
 }
@@ -1452,13 +1460,41 @@ function renderFirstPerson(W, H) {
       ]);
       const tClipped = clipPolyToViewport(t);
       if (tClipped.length >= 3) {
-        // Pad top — base slate fill + procedurally drawn brushed-metal grain
-        // lines. Each line is a true 3D segment projected per-frame, so the
-        // grain compresses naturally with perspective and stays attached to
-        // the pad surface (no bitmap, no affine approximation needed).
+        // 1) Base slate fill — visible until the aluminium image arrives.
         fillPoly(tClipped, '#6b7588');
-        // Clip subsequent line strokes to the pad polygon so grain doesn't
-        // leak across pad edges into the gap.
+        // 2) Aluminium image, mapped to the pad surface via two-triangle
+        //    affine mapping. The pad quad is split P0-P1-P3 + P1-P2-P3,
+        //    each triangle gets its own matrix that maps the texture's 3
+        //    reference corners exactly onto the projected pad corners.
+        const P0 = project(-halfW, y1, 0);
+        const P1 = project( halfW, y1, 0);
+        const P2 = project( halfW, y2, 0);
+        const P3 = project(-halfW, y2, 0);
+        if (metalPatternSource && metalPatternSource.naturalWidth > 0 && P0 && P1 && P2 && P3) {
+          const src = metalPatternSource;
+          const texW = src.naturalWidth, texH = src.naturalHeight;
+          function affineTri(A, B, C, ta, tb, tc) {
+            const det = (tb.u - ta.u)*(tc.v - ta.v) - (tc.u - ta.u)*(tb.v - ta.v);
+            if (Math.abs(det) < 1e-6) return;
+            const a = ((B.x - A.x)*(tc.v - ta.v) - (C.x - A.x)*(tb.v - ta.v)) / det;
+            const c = ((C.x - A.x)*(tb.u - ta.u) - (B.x - A.x)*(tc.u - ta.u)) / det;
+            const e = A.x - a*ta.u - c*ta.v;
+            const b = ((B.y - A.y)*(tc.v - ta.v) - (C.y - A.y)*(tb.v - ta.v)) / det;
+            const d = ((C.y - A.y)*(tb.u - ta.u) - (B.y - A.y)*(tc.u - ta.u)) / det;
+            const f = A.y - b*ta.u - d*ta.v;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(C.x, C.y); ctx.closePath();
+            ctx.clip();
+            ctx.transform(a, b, c, d, e, f);
+            ctx.drawImage(src, 0, 0);
+            ctx.restore();
+          }
+          affineTri(P0, P1, P3, {u:0,v:0},    {u:texW,v:0},    {u:0,v:texH});
+          affineTri(P1, P2, P3, {u:texW,v:0}, {u:texW,v:texH}, {u:0,v:texH});
+        }
+        // 3) Overlay: brushed-metal grain lines as 3D segments so the surface
+        //    orientation is always readable even if the image fails.
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(tClipped[0].x, tClipped[0].y);
