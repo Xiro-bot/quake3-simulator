@@ -238,45 +238,88 @@ function playJumpGrunt() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
   const out = audioCtx.destination;
-  // 1. Sub growl
-  const growl = audioCtx.createOscillator();
-  growl.type = 'sawtooth';
-  growl.frequency.setValueAtTime(130, t);
-  growl.frequency.exponentialRampToValueAtTime(68, t + 0.18);
-  const gGain = audioCtx.createGain();
-  gGain.gain.setValueAtTime(0, t);
-  gGain.gain.linearRampToValueAtTime(0.32, t + 0.015);
-  gGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-  growl.connect(gGain).connect(out);
-  // 2. Breath noise (bandpassed)
-  const noiseBuf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.22), audioCtx.sampleRate);
-  const nd = noiseBuf.getChannelData(0);
+  const dur = 0.30;
+  // ── Master ──
+  const master = audioCtx.createGain();
+  master.gain.value = 0.6;
+  master.connect(out);
+  // ── Vocal source: TWO detuned saws (chorus) + LFO vibrato ──
+  const osc1 = audioCtx.createOscillator(); osc1.type = 'sawtooth';
+  const osc2 = audioCtx.createOscillator(); osc2.type = 'sawtooth';
+  osc1.frequency.setValueAtTime(135, t);
+  osc1.frequency.exponentialRampToValueAtTime(78, t + dur);
+  osc2.frequency.setValueAtTime(138, t);  // 3 Hz detune for chorus thickness
+  osc2.frequency.exponentialRampToValueAtTime(81, t + dur);
+  const vib = audioCtx.createOscillator(); vib.type = 'sine'; vib.frequency.value = 5.5;
+  const vibAmt = audioCtx.createGain(); vibAmt.gain.value = 4;
+  vib.connect(vibAmt); vibAmt.connect(osc1.frequency); vibAmt.connect(osc2.frequency);
+  const oscMix = audioCtx.createGain(); oscMix.gain.value = 0.45;
+  osc1.connect(oscMix); osc2.connect(oscMix);
+  // ── Formant filters — three bandpasses tuned for a male "uh→ah" vowel,
+  //    F1 sweeps closed → open to mimic the vocal-tract opening on a grunt ──
+  function formant(freqStart, freqEnd, q) {
+    const f = audioCtx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(freqStart, t);
+    f.frequency.linearRampToValueAtTime(freqEnd, t + dur*0.5);
+    f.Q.value = q;
+    return f;
+  }
+  const f1 = formant(550, 720, 9);   // 1st formant (jaw open)
+  const f2 = formant(1100, 1100, 12); // 2nd formant (tongue position)
+  const f3 = formant(2500, 2500, 7);  // 3rd formant (brightness)
+  const formMix = audioCtx.createGain();
+  oscMix.connect(f1).connect(formMix);
+  oscMix.connect(f2).connect(formMix);
+  oscMix.connect(f3).connect(formMix);
+  // Voice envelope
+  const voiceEnv = audioCtx.createGain();
+  voiceEnv.gain.setValueAtTime(0.0001, t);
+  voiceEnv.gain.exponentialRampToValueAtTime(1.0, t + 0.025);
+  voiceEnv.gain.exponentialRampToValueAtTime(0.55, t + 0.12);
+  voiceEnv.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  formMix.connect(voiceEnv).connect(master);
+  // ── Breath noise (filtered & enveloped) ──
+  const nBuf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+  const nd = nBuf.getChannelData(0);
   for (let i = 0; i < nd.length; i++) nd[i] = Math.random()*2 - 1;
-  const noise = audioCtx.createBufferSource();
-  noise.buffer = noiseBuf;
-  const filter = audioCtx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.frequency.setValueAtTime(900, t);
-  filter.frequency.exponentialRampToValueAtTime(380, t + 0.16);
-  filter.Q.value = 2.4;
+  const noise = audioCtx.createBufferSource(); noise.buffer = nBuf;
+  const nFilt = audioCtx.createBiquadFilter();
+  nFilt.type = 'bandpass';
+  nFilt.frequency.setValueAtTime(2200, t);
+  nFilt.frequency.exponentialRampToValueAtTime(700, t + dur);
+  nFilt.Q.value = 1.6;
   const nGain = audioCtx.createGain();
   nGain.gain.setValueAtTime(0, t);
-  nGain.gain.linearRampToValueAtTime(0.18, t + 0.02);
-  nGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-  noise.connect(filter).connect(nGain).connect(out);
-  // 3. Body thump (short sine click)
-  const thump = audioCtx.createOscillator();
-  thump.type = 'sine';
-  thump.frequency.setValueAtTime(60, t);
-  thump.frequency.exponentialRampToValueAtTime(35, t + 0.06);
-  const tGain = audioCtx.createGain();
-  tGain.gain.setValueAtTime(0, t);
-  tGain.gain.linearRampToValueAtTime(0.25, t + 0.005);
-  tGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-  thump.connect(tGain).connect(out);
+  nGain.gain.linearRampToValueAtTime(0.13, t + 0.02);
+  nGain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  noise.connect(nFilt).connect(nGain).connect(master);
+  // ── Body thump (sub click) ──
+  const thump = audioCtx.createOscillator(); thump.type = 'sine';
+  thump.frequency.setValueAtTime(55, t);
+  thump.frequency.exponentialRampToValueAtTime(32, t + 0.08);
+  const thGain = audioCtx.createGain();
+  thGain.gain.setValueAtTime(0, t);
+  thGain.gain.linearRampToValueAtTime(0.22, t + 0.005);
+  thGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  thump.connect(thGain).connect(master);
+  // ── Short convolution reverb for chest body ──
+  const rLen = Math.floor(audioCtx.sampleRate * 0.18);
+  const rBuf = audioCtx.createBuffer(2, rLen, audioCtx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const ch_ = rBuf.getChannelData(ch);
+    for (let i = 0; i < rLen; i++) {
+      const decay = Math.exp(-i / (audioCtx.sampleRate * 0.04));
+      ch_[i] = (Math.random()*2 - 1) * decay * 0.6;
+    }
+  }
+  const reverb = audioCtx.createConvolver(); reverb.buffer = rBuf;
+  const rGain = audioCtx.createGain(); rGain.gain.value = 0.22;
+  voiceEnv.connect(reverb).connect(rGain).connect(master);
   // Start / stop
-  growl.start(t); noise.start(t); thump.start(t);
-  growl.stop(t + 0.22); noise.stop(t + 0.22); thump.stop(t + 0.1);
+  osc1.start(t); osc2.start(t); vib.start(t); noise.start(t); thump.start(t);
+  osc1.stop(t + dur + 0.05); osc2.stop(t + dur + 0.05); vib.stop(t + dur + 0.05);
+  noise.stop(t + dur); thump.stop(t + 0.12);
 }
 
 // ───── Procedural textures ─────
