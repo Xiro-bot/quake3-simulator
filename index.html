@@ -261,7 +261,11 @@ const TRACK = {
 // Same pad length and depth everywhere; only the SPACING is data-driven, so
 // bot8 (the slowest +30%-off-θ bot) lands on the centre of every pad and
 // any faster bot clears the gaps trivially.
-const PAD_RADIUS = 75;  // half-length along +y → pad length = 150 ups
+const PAD_RADIUS = 75;     // half-length along +y → pad length = 150 ups
+const PLAYER_RADIUS = 15;  // Q3 player half-width — applied to wall clamp +
+                           // onPad check so collisions have realistic margin
+                           // (your edge touches the wall, not your center;
+                           // you can hang ~15 ups off a pad and still stand).
 const BOT8_LANDINGS = [
   267, 592.7, 979.2, 1420.3, 1907.8, 2438.9, 3009.2, 3617.1, 4259.6, 4935.3,
   5642.3, 6379.8, 7146.1, 7940.2, 8761.2, 9608.5, 10481, 11377.9, 12298.7,
@@ -271,16 +275,18 @@ const BOT8_LANDINGS = [
 // Start pad at y=75 (covers [0, 150]) so the spawn position is on a pad.
 const PAD_CENTERS = [75, ...BOT8_LANDINGS];
 function onPad(x, y) {
-  if (x < -TRACK.width/2 || x > TRACK.width/2) return false;
-  if (y < 0 || y > TRACK.length) return false;
-  // Binary search for the first centre >= y, then check it and the previous.
+  // Allow the player's bounding box to overhang the pad by PLAYER_RADIUS.
+  // Wall clamping already constrains x, so the x-check here is informational.
+  if (x < -TRACK.width/2 - PLAYER_RADIUS || x > TRACK.width/2 + PLAYER_RADIUS) return false;
+  if (y < -PLAYER_RADIUS || y > TRACK.length + PLAYER_RADIUS) return false;
   let lo = 0, hi = PAD_CENTERS.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (PAD_CENTERS[mid] < y) lo = mid + 1; else hi = mid;
   }
-  if (lo < PAD_CENTERS.length && Math.abs(PAD_CENTERS[lo] - y) <= PAD_RADIUS) return true;
-  if (lo > 0 && Math.abs(PAD_CENTERS[lo - 1] - y) <= PAD_RADIUS) return true;
+  const reach = PAD_RADIUS + PLAYER_RADIUS;
+  if (lo < PAD_CENTERS.length && Math.abs(PAD_CENTERS[lo] - y) <= reach) return true;
+  if (lo > 0 && Math.abs(PAD_CENTERS[lo - 1] - y) <= reach) return true;
   return false;
 }
 const EYE_HEIGHT = 26;  // Q3 player view height when standing
@@ -516,11 +522,12 @@ function step(e, inputs, dt) {
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
-  // Corridor walls are solid — clamp x and zero the normal-component of
-  // velocity (Q3 slide: lose vx, keep vy so you slide along the wall).
-  const halfW_w = TRACK.width / 2;
-  if (e.x < -halfW_w) { e.x = -halfW_w; if (e.vx < 0) e.vx = 0; }
-  if (e.x >  halfW_w) { e.x =  halfW_w; if (e.vx > 0) e.vx = 0; }
+  // Corridor walls are solid — clamp the player's CENTER to (halfW - radius)
+  // so the player's body edge stops at the wall surface, not the centre.
+  // Q3 slide: lose normal-component of vx, keep vy.
+  const wallLimit = TRACK.width / 2 - PLAYER_RADIUS;
+  if (e.x < -wallLimit) { e.x = -wallLimit; if (e.vx < 0) e.vx = 0; }
+  if (e.x >  wallLimit) { e.x =  wallLimit; if (e.vx > 0) e.vx = 0; }
   // Walked off a pad → start falling. Don't change z yet; gravity will pull
   // it down next frame.
   if (e.onGround && !onPad(e.x, e.y)) {
