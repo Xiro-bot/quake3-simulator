@@ -421,73 +421,7 @@ const lavaTile = (() => {
   }
   return c;
 })();
-// Aluminum texture loaded from textures/aluminum.jpg (CC0, see textures/CREDITS.md).
-// When the image arrives, swap `metalPatternSource` to point at it; until
-// then we use the procedural metalTile so the trainer is functional from
-// the first frame and degrades gracefully if the file is missing.
-let metalPatternSource = null;
-let metalStatus = 'loading';
-// 1-D row-averaged colour profile sampled from the aluminium image. Each
-// pad grain line picks one entry from this and draws as a 3D segment, so
-// the texture's actual colours appear on the pad but mapping is perfect
-// (each line is perspective-projected per-frame).
-let grainProfile = null;
-{
-  const img = new Image();
-  img.onload = () => {
-    metalPatternSource = img;
-    metalStatus = `image ${img.naturalWidth}x${img.naturalHeight}`;
-    // Build the row profile in a one-shot offscreen canvas read.
-    try {
-      const w = img.naturalWidth, h = img.naturalHeight;
-      const off = document.createElement('canvas');
-      off.width = w; off.height = h;
-      const ocx = off.getContext('2d');
-      ocx.drawImage(img, 0, 0);
-      const data = ocx.getImageData(0, 0, w, h).data;
-      const prof = new Uint8ClampedArray(h * 3);
-      for (let y = 0; y < h; y++) {
-        let r = 0, g = 0, b = 0;
-        for (let x = 0; x < w; x++) {
-          const i = (y * w + x) * 4;
-          r += data[i]; g += data[i+1]; b += data[i+2];
-        }
-        prof[y*3] = r/w; prof[y*3+1] = g/w; prof[y*3+2] = b/w;
-      }
-      grainProfile = { profile: prof, height: h };
-      console.log(`[texture] grain profile built (${h} samples)`);
-    } catch (e) {
-      console.warn('[texture] grain profile failed:', e.message);
-    }
-  };
-  img.onerror = (e) => {
-    metalStatus = 'image failed (procedural fallback)';
-    console.warn('[texture] aluminum.jpg failed:', e);
-  };
-  img.src = 'textures/aluminum.jpg';
-}
-// Brushed-metal procedural fallback tile for pad tops.
-const metalTile = (() => {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const cx = c.getContext('2d');
-  cx.fillStyle = '#5e6a78';
-  cx.fillRect(0, 0, 64, 64);
-  for (let y = 0; y < 64; y += 1) {
-    const v = 0.85 + 0.3 * Math.sin(y * 4.7 + 0.7);
-    const r = Math.round(94 * v), g = Math.round(106 * v), b = Math.round(120 * v);
-    cx.fillStyle = `rgba(${r},${g},${b},0.55)`;
-    cx.fillRect(0, y, 64, 1);
-  }
-  // A few darker scratches
-  cx.strokeStyle = 'rgba(0,0,0,0.18)';
-  cx.lineWidth = 1;
-  for (let i = 0; i < 6; i++) {
-    const y = Math.random() * 64;
-    cx.beginPath(); cx.moveTo(0, y); cx.lineTo(64, y + (Math.random()-0.5)*2); cx.stroke();
-  }
-  return c;
-})();
+// (Texture experiments removed — pad tops render as a flat slate fill.)
 
 // ───── Physics profiles ─────
 // VQ3 = stock Q3 / defrag VQ3 mode.
@@ -1175,7 +1109,7 @@ function frame() {
     const Vb1 = Math.hypot(bot1.vx, bot1.vy).toFixed(0);
     const Vb3 = Math.hypot(bot3.vx, bot3.vy).toFixed(0);
     const Vb5 = Math.hypot(bot5.vx, bot5.vy).toFixed(0);
-    dbg.textContent = `[${PHYS.name}] f${frameCount} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v=${Vme}/${Vb1}/${Vb3}/${Vb5} · audio:${audioStatus} · tex:${metalStatus}`;
+    dbg.textContent = `[${PHYS.name}] f${frameCount} · cam=${cam.label}(${cam.x.toFixed(0)},${cam.y.toFixed(0)}) · v=${Vme}/${Vb1}/${Vb3}/${Vb5} · audio:${audioStatus}`;
   }
   requestAnimationFrame(frame);
 }
@@ -1486,48 +1420,7 @@ function renderFirstPerson(W, H) {
       ]);
       const tClipped = clipPolyToViewport(t);
       if (tClipped.length >= 3) {
-        // Base slate fill so the pad has solid presence under everything.
-        fillPoly(tClipped, '#6b7588');
-        // Grain lines along the world-x axis. Each line is projected per-
-        // frame, so it perspective-foreshortens with the surface. Colors
-        // are sampled from the aluminium image's row-averaged profile —
-        // so you see the real texture's brightness pattern, but on a
-        // properly surface-aligned line grid (no affine artefacts).
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(tClipped[0].x, tClipped[0].y);
-        for (let k = 1; k < tClipped.length; k++) ctx.lineTo(tClipped[k].x, tClipped[k].y);
-        ctx.closePath();
-        ctx.clip();
-        const GRAIN_STEP = 1.5;  // world-ups between adjacent grain lines
-        const GRAIN_PERIOD = 200; // texture wraps every this many world-ups
-        for (let yy = y1; yy < y2; yy += GRAIN_STEP) {
-          let r, g, b, alpha = 0.95;
-          if (grainProfile) {
-            // Sample the profile, repeating every GRAIN_PERIOD world-ups so
-            // the visible grain texture has scale grounded in world units.
-            const t01 = ((yy / GRAIN_PERIOD) % 1 + 1) % 1;
-            const idx = Math.min(grainProfile.height - 1, Math.floor(t01 * grainProfile.height)) * 3;
-            r = grainProfile.profile[idx];
-            g = grainProfile.profile[idx + 1];
-            b = grainProfile.profile[idx + 2];
-          } else {
-            const n = (Math.sin(yy * 1.71 + 3.13) + Math.sin(yy * 5.07 - 7.91)) * 0.5;
-            const v = 110 + n * 70;
-            r = v; g = v + 5; b = v + 15;
-            alpha = 0.55;
-          }
-          const seg = projectLine(-halfW + 4, yy, 0.01, halfW - 4, yy, 0.01);
-          if (seg) {
-            ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${alpha})`;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.moveTo(seg[0].x, seg[0].y);
-            ctx.lineTo(seg[1].x, seg[1].y);
-            ctx.stroke();
-          }
-        }
-        ctx.restore();
+        fillPoly(tClipped, '#7b8696');
       }
       // Caution-tape edges — thicker hazard-style band with shorter chevrons
       // so the alternation reads even when the camera is far away. Two
