@@ -1219,18 +1219,19 @@ function renderFirstPerson(W, H) {
     };
     if (frontCloser) { drawBack(); drawFront(); }
     else             { drawFront(); drawBack(); }
-    // Top surface — only draw when the camera's eye is above pad level.
-    // Otherwise the top plane is back-facing and visually leaks "through"
-    // the cliff face from below.
-    if (cam.z + EYE_HEIGHT > 0) {
+    // Backface-cull the top and bottom faces:
+    //   eye above pad surface (z>0)         → draw TOP, hide BOTTOM
+    //   eye below pad bottom (z<-thickness) → draw BOTTOM, hide TOP
+    //   eye in the slab middle              → hide both; only front/back
+    //                                          cliff faces are visible
+    const eyeZ = cam.z + EYE_HEIGHT;
+    if (eyeZ > 0) {
       const t = projPolygonClipped([
         [-halfW, y1, 0], [halfW, y1, 0],
         [halfW, y2, 0],  [-halfW, y2, 0],
       ]);
       fillPoly(t, '#7b8696');
-    } else {
-      // Camera is below the pad surface — show the underside instead so it
-      // still looks solid from below (matches the cliff colour).
+    } else if (eyeZ < -TRACK.pad_thickness) {
       const b = projPolygonClipped([
         [-halfW, y1, -TRACK.pad_thickness], [halfW, y1, -TRACK.pad_thickness],
         [halfW, y2, -TRACK.pad_thickness],  [-halfW, y2, -TRACK.pad_thickness],
