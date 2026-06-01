@@ -316,7 +316,7 @@ const cfg = {
 function makeEntity(yaw) {
   return {
     x:0, y:0, z:0, vx:0, vy:0, vz:0,
-    yaw: yaw, pitch: 0, onGround: true, justLanded: false, fell: false,
+    yaw: yaw, pitch: 0, onGround: true, justLanded: false, fell: false, inLava: false,
     lastTakeoffSpeed: 0, lastLandSpeed: 0, lastGain: 0,
     jumps: 0, strafeSide: 1, landCount: 0, cyclePhase: 0,
     trail: [],
@@ -499,26 +499,26 @@ function step(e, inputs, dt) {
   if (!e.onGround) {
     e.vz -= PHYS.gravity * dt;
     e.z += e.vz * dt;
-    // Land on pad surface (z=0) only if (x,y) is over a pad.
-    if (e.z <= 0 && e.vz <= 0 && onPad(e.x, e.y)) {
+    // Land on a pad surface only if (x,y) is over one AND we haven't
+    // already crossed the lava plane in a gap. The inLava commit prevents
+    // soft-landing on the next pad after a short jump while preserving the
+    // natural arc of the fall — gravity keeps pulling, vx/vy keep coasting.
+    if (e.z <= 0 && e.vz <= 0 && onPad(e.x, e.y) && !e.inLava) {
       e.z = 0; e.vz = 0;
       e.onGround = true; e.justLanded = true;
       e.lastLandSpeed = Math.hypot(e.vx, e.vy);
       e.lastGain = e.lastLandSpeed - e.lastTakeoffSpeed;
       const lastLog = e.jumpLog[e.jumpLog.length - 1];
       if (lastLog) { lastLog.land = e.lastLandSpeed; lastLog.gain = e.lastGain; }
-    } else if (e.z < 0 && !onPad(e.x, e.y) && !e.fell) {
-      // In the lava plane — kill horizontal motion (you're sinking, not
-      // gliding) and let gravity drop you the rest of the way to the
-      // death threshold. Without this the player jumps a short gap, drops
-      // below z=0 mid-flight, then re-enters the next pad's y-range and
-      // "lands" on it — surfing the lava with no penalty.
-      e.vx = 0; e.vy = 0;
-      if (e.z < -TRACK.lava_depth) {
-        e.fell = true;
-        e.vz = 0;
-        e.z = -TRACK.lava_depth;
-      }
+    } else if (e.z < 0 && !onPad(e.x, e.y) && !e.inLava) {
+      // Crossed the floor plane outside any pad — commit to falling. From
+      // this frame on, no pad will catch us.
+      e.inLava = true;
+    }
+    if (e.inLava && e.z < -TRACK.lava_depth && !e.fell) {
+      e.fell = true;
+      e.vx = e.vy = e.vz = 0;
+      e.z = -TRACK.lava_depth;
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
