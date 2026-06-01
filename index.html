@@ -1452,41 +1452,52 @@ function renderFirstPerson(W, H) {
       ]);
       const tClipped = clipPolyToViewport(t);
       if (tClipped.length >= 3) {
-        const src = (metalPatternSource && metalPatternSource.complete) ? metalPatternSource : metalTile;
-        const p0 = project(-halfW, y1, 0);
-        const p1 = project( halfW, y1, 0);
-        const p3 = project(-halfW, y2, 0);
-        // Plane-mapping via ctx.transform + clip + drawImage. The transform
-        // makes "world (x,y) on the pad surface" the local coord system, so
-        // drawing the texture image at its natural size and tiling it
-        // produces a properly surface-aligned fill (affine, not full
-        // perspective — close enough for short pads).
-        if (p0 && p1 && p3) {
-          // Affine: (worldX_offset_from_p0, worldY_offset_from_p0) → canvas
-          // dux, duy = canvas delta per world-unit-x; dvx, dvy = per world-unit-y.
-          const dux = (p1.x - p0.x) / (2 * halfW);
-          const duy = (p1.y - p0.y) / (2 * halfW);
-          const dvx = (p3.x - p0.x) / (y2 - y1);
-          const dvy = (p3.y - p0.y) / (y2 - y1);
-          ctx.save();
-          ctx.beginPath();
-          ctx.moveTo(tClipped[0].x, tClipped[0].y);
-          for (let k = 1; k < tClipped.length; k++) ctx.lineTo(tClipped[k].x, tClipped[k].y);
-          ctx.closePath();
-          ctx.clip();
-          // Now the local coords map to the surface plane in screen space.
-          ctx.transform(dux, duy, dvx, dvy, p0.x, p0.y);
-          // Tile the image across the pad's full world extent. Texture is
-          // sized at TILE world-units per image so the grain isn't tiny.
-          const TILE = 200;
-          const nU = Math.ceil((2*halfW) / TILE);
-          const nV = Math.ceil((y2 - y1) / TILE);
-          for (let i = 0; i < nU; i++) {
-            for (let j = 0; j < nV; j++) {
-              ctx.drawImage(src, i * TILE, j * TILE, TILE, TILE);
-            }
+        const src = (metalPatternSource && metalPatternSource.complete && metalPatternSource.naturalWidth > 0)
+                    ? metalPatternSource : metalTile;
+        // Triangulated affine texture mapping. Two triangles per pad, each
+        // with its own affine matrix that maps the texture's 3 corners
+        // exactly onto the 3 projected pad corners. drawImage with the
+        // current transform draws a per-triangle parallelogram parallelo —
+        // clipped to the triangle, this gives a true surface-aligned tile.
+        const P0 = project(-halfW, y1, 0);
+        const P1 = project( halfW, y1, 0);
+        const P2 = project( halfW, y2, 0);
+        const P3 = project(-halfW, y2, 0);
+        if (P0 && P1 && P2 && P3) {
+          const texW = src.width || src.naturalWidth || 256;
+          const texH = src.height || src.naturalHeight || 256;
+          function drawTri(A, B, C, ta, tb, tc) {
+            // Solve M·(ta,tb,tc) = (A,B,C) → 6 unknowns, 6 equations
+            const M11 = (B.x - A.x) / (tb.u - ta.u);  // for triangle with right-angle at A in tex space:
+            // simpler: assume tex coords ta=(0,0), tb=(texW,0), tc=(0,texH) for tri A
+            //          OR ta=(texW,0), tb=(texW,texH), tc=(0,texH) for tri B.
+            // Solve linear system M = | a c e | such that M*ta = A, M*tb = B, M*tc = C
+            //                         | b d f |
+            const x0 = ta.u, y0 = ta.v;
+            const x1 = tb.u, y1_ = tb.v;
+            const x2 = tc.u, y2_ = tc.v;
+            const det = (x1 - x0) * (y2_ - y0) - (x2 - x0) * (y1_ - y0);
+            const a = ((B.x - A.x) * (y2_ - y0) - (C.x - A.x) * (y1_ - y0)) / det;
+            const c = ((C.x - A.x) * (x1 - x0) - (B.x - A.x) * (x2 - x0)) / det;
+            const e = A.x - a * x0 - c * y0;
+            const b = ((B.y - A.y) * (y2_ - y0) - (C.y - A.y) * (y1_ - y0)) / det;
+            const d = ((C.y - A.y) * (x1 - x0) - (B.y - A.y) * (x2 - x0)) / det;
+            const f = A.y - b * x0 - d * y0;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.lineTo(C.x, C.y); ctx.closePath();
+            ctx.clip();
+            ctx.transform(a, b, c, d, e, f);
+            ctx.drawImage(src, 0, 0, texW, texH);
+            ctx.restore();
           }
-          ctx.restore();
+          // Pad quad as two triangles:
+          //   T1 = P0, P1, P3 with tex (0,0), (texW,0), (0,texH)
+          //   T2 = P1, P2, P3 with tex (texW,0), (texW,texH), (0,texH)
+          drawTri(P0, P1, P3,
+                  {u:0,    v:0},    {u:texW, v:0},    {u:0,    v:texH});
+          drawTri(P1, P2, P3,
+                  {u:texW, v:0},    {u:texW, v:texH}, {u:0,    v:texH});
         } else {
           fillPoly(tClipped, '#5e6a78');
         }
