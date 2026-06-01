@@ -1437,6 +1437,27 @@ function renderFirstPerson(W, H) {
         // procedural grain tile otherwise.
         const src = (metalPatternSource && metalPatternSource.complete) ? metalPatternSource : metalTile;
         const metalPat = ctx.createPattern(src, 'repeat');
+        // Affine plane-mapping: project the pad's 3 reference corners and
+        // build a 2D transform such that the texture's local axes line up
+        // with the pad's world-x and world-y axes in screen space. Not full
+        // perspective correction (no per-pixel divide), but the texture now
+        // follows the surface plane instead of tiling in screen space.
+        const tile_world_u = 200;  // ups across pad → one texture repeat (~3 across width)
+        const tile_world_v = 200;  // ups along pad   → one texture repeat
+        const p0 = project(-halfW, y1, 0);
+        const p1 = project( halfW, y1, 0);
+        const p3 = project(-halfW, y2, 0);
+        if (p0 && p1 && p3) {
+          const dux = (p1.x - p0.x) / (2 * halfW) * tile_world_u;
+          const duy = (p1.y - p0.y) / (2 * halfW) * tile_world_u;
+          const dvx = (p3.x - p0.x) / (y2 - y1)   * tile_world_v;
+          const dvy = (p3.y - p0.y) / (y2 - y1)   * tile_world_v;
+          metalPat.setTransform(new DOMMatrix([
+            dux / tile_world_u, duy / tile_world_u,
+            dvx / tile_world_v, dvy / tile_world_v,
+            p0.x, p0.y,
+          ]));
+        }
         ctx.fillStyle = metalPat;
         ctx.beginPath();
         ctx.moveTo(tClipped[0].x, tClipped[0].y);
