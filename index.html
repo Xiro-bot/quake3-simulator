@@ -253,8 +253,8 @@ const TRACK = {
   wallHeight: 120,
   startY: 0,
   markerStep: 500,      // distance line every 500 ups
-  pad_thickness: 200,   // visible side height of the pad slab (Z extent)
-  lava_depth:   240,    // z < −lava_depth → "fell in lava"
+  pad_thickness: 40,    // visible side height of the pad slab (thin floating platforms)
+  lava_depth:   80,     // z < −lava_depth → "fell in lava"
 };
 // Pad layout — start pad at the spawn line + a pad centered on each bot8
 // landing y-position taken from the headless sim (/tmp/bot8-landings.js).
