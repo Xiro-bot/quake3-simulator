@@ -165,8 +165,10 @@
       </label>
       <label>CJ assist
         <select id="cjAssist">
-          <option value="right" selected>curl right (W+D)</option>
-          <option value="left">curl left (W+A)</option>
+          <option value="right" selected>fastest · curl right (W+D)</option>
+          <option value="left">fastest · curl left (W+A)</option>
+          <option value="classic-right">classic arc · sweep right</option>
+          <option value="classic-left">classic arc · sweep left</option>
           <option value="off">off</option>
         </select>
       </label>
@@ -1315,14 +1317,24 @@ function gainingZone() {
   };
 }
 // ─── Circle-jump assistant ───
-// Paints the ideal CJ trajectory on the start pad. The path is the per-frame
-// max-speed ground strafe for the ACTIVE physics + fps: friction, then
+// Paints the ideal CJ trajectory on the start pad, two forms:
+//
+// FASTEST (greedy): per-frame max-speed ground strafe — friction, then
 // PM_Accelerate with wishdir held at θ* = acos((W−Δ)/V) on the curl side.
-// Below V ≈ W−Δ (294 vq3 / 282 cpm) θ* = 0, so the ideal line is STRAIGHT —
-// the curl only appears near the top. The sim runs in a local frame, is then
-// rotated so takeoff velocity points exactly down-track (+y), and anchored
-// just ahead of the spawn point. Jump target = a strong CJ for the physics
-// (theoretical frame-perfect ceilings: ~410 vq3, ~432 cpm).
+// Below V ≈ W−Δ (294 vq3 / 282 cpm) θ* = 0, so the line is STRAIGHT and the
+// curl only appears near the top (~30° path bend, ~65° mouse sweep).
+//
+// CLASSIC ARC: the traditional quarter-turn CJ — wishdir (≈ view with W-only)
+// sweeps LINEARLY from ~75° off-track to the optimal takeoff wishdir over N
+// frames, velocity chasing it; N (and if needed the start offset) is searched
+// at compute time so the takeoff lands aligned at target speed for the active
+// physics + fps. Costs ~0.03-0.07 s and ~15-25 ups runway vs greedy, but
+// packs the build-up into a more compact area (how real start pads with a
+// timer trigger are played).
+//
+// Both run in a local frame, are rotated so takeoff velocity is exactly
+// down-track (+y), and anchored just ahead of the spawn point. Jump target =
+// a strong CJ for the physics (frame-perfect ceilings: ~410 vq3, ~432 cpm).
 let cjCache = null;
 function getCJ() {
   if (cfg.cjAssist === 'off') return null;
@@ -1332,30 +1344,82 @@ function getCJ() {
   const W = PHYS.gSpeed;
   const Delta = PHYS.pm_accelerate * dt * W;
   const targetV = PHYS.pm_aircontrol > 0 ? 420 : 390;
-  const curl = cfg.cjAssist === 'right' ? -1 : +1;  // wish side vs velocity; −1 curls velocity clockwise (rightward)
-  let vx = 0, vy = 0, x = 0, y = 0;
-  const raw = [{ x, y, V: 0 }];
-  for (let f = 0; f < 600; f++) {
-    let V = Math.hypot(vx, vy);
-    if (V >= targetV) break;
+  const classic = cfg.cjAssist.startsWith('classic');
+  const curl = cfg.cjAssist.endsWith('right') ? -1 : +1;  // wish side vs velocity; −1 curls velocity clockwise (rightward)
+  const thetaEnd = Math.acos(Math.min(1, (W - Delta) / targetV));
+
+  // One ground frame: friction, THEN pick wishdir, then PM_Accelerate.
+  // wishFn must be evaluated post-friction — θ* from the pre-friction V is
+  // slightly too wide, which (in CPM@125) drops the strafe equilibrium just
+  // below the jump target and the path never terminates. Mutates s.
+  function groundFrame(s, wishFn) {
+    let V = Math.hypot(s.vx, s.vy);
     if (V >= 1) {
       const control = Math.max(V, PHYS.pm_stopspeed);
       const ns = Math.max(0, V - control * PHYS.pm_friction * dt);
-      vx *= ns / V; vy *= ns / V; V = ns;
-    } else { vx = 0; vy = 0; V = 0; }
-    const cosT = V > 1e-9 ? Math.min(1, (W - Delta) / V) : 1;
-    const theta = Math.acos(cosT);
-    const velAng = V > 1e-9 ? Math.atan2(vy, vx) : 0;
-    const wishAng = velAng + curl * theta;
-    const a = Math.min(Delta, Math.max(0, W - V * cosT));
-    vx += a * Math.cos(wishAng); vy += a * Math.sin(wishAng);
-    x += vx * dt; y += vy * dt;
-    raw.push({ x, y, V: Math.hypot(vx, vy) });
+      s.vx *= ns / V; s.vy *= ns / V;
+    } else { s.vx = 0; s.vy = 0; }
+    const wishAng = wishFn(s);
+    const cur = s.vx * Math.cos(wishAng) + s.vy * Math.sin(wishAng);
+    const a = Math.min(Delta, Math.max(0, W - cur));
+    s.vx += a * Math.cos(wishAng); s.vy += a * Math.sin(wishAng);
+    s.x += s.vx * dt; s.y += s.vy * dt;
   }
+  function optimalWish(s) {  // θ* on the curl side of current velocity
+    const V = Math.hypot(s.vx, s.vy);
+    const cosT = V > 1e-9 ? Math.min(1, (W - Delta) / V) : 1;
+    const velAng = V > 1e-9 ? Math.atan2(s.vy, s.vx) : 0;
+    return velAng + curl * Math.acos(cosT);
+  }
+  function simGreedy() {
+    const s = { vx: 0, vy: 0, x: 0, y: 0 };
+    const pts = [{ x: 0, y: 0, V: 0 }];
+    for (let f = 0; f < 600 && Math.hypot(s.vx, s.vy) < targetV; f++) {
+      groundFrame(s, optimalWish);
+      pts.push({ x: s.x, y: s.y, V: Math.hypot(s.vx, s.vy) });
+    }
+    return { pts, vx: s.vx, vy: s.vy };
+  }
+  function simClassic(startOffRad, N) {
+    // Local frame: track axis = +y. View sweeps startWish → endWish over N
+    // frames, then holds θ* until target speed.
+    const startWish = Math.PI / 2 - curl * startOffRad;
+    const endWish = Math.PI / 2 + curl * thetaEnd;
+    const s = { vx: 0, vy: 0, x: 0, y: 0 };
+    const pts = [{ x: 0, y: 0, V: 0 }];
+    for (let f = 0; f < 800 && Math.hypot(s.vx, s.vy) < targetV; f++) {
+      const wishFn = f < N ? () => startWish + (endWish - startWish) * (f / N) : optimalWish;
+      groundFrame(s, wishFn);
+      pts.push({ x: s.x, y: s.y, V: Math.hypot(s.vx, s.vy) });
+    }
+    return { pts, vx: s.vx, vy: s.vy };
+  }
+  let sim = null;
+  if (classic) {
+    // Search sweep duration (and start offset as fallback) for the shortest
+    // run that takes off aligned (within tolerance) at target speed.
+    outer:
+    for (const tolDeg of [3, 6]) {
+      for (const offDeg of [75, 60, 90]) {
+        let best = null;
+        for (let N = 8; N <= 120; N++) {
+          const r = simClassic(offDeg * Math.PI / 180, N);
+          if (Math.hypot(r.vx, r.vy) < targetV - 0.5) continue;
+          let err = Math.atan2(r.vy, r.vx) - Math.PI / 2;
+          while (err > Math.PI) err -= 2 * Math.PI;
+          while (err < -Math.PI) err += 2 * Math.PI;
+          if (Math.abs(err) > tolDeg * Math.PI / 180) continue;
+          if (!best || r.pts.length < best.pts.length) best = r;
+        }
+        if (best) { sim = best; break outer; }
+      }
+    }
+  }
+  if (!sim) sim = simGreedy();  // fastest form, also the classic-search fallback
   // Rotate so takeoff velocity = +y exactly; anchor the start just past the spawn line.
-  const rot = Math.PI / 2 - Math.atan2(vy, vx);
+  const rot = Math.PI / 2 - Math.atan2(sim.vy, sim.vx);
   const cr = Math.cos(rot), sr = Math.sin(rot);
-  const pts = raw.map(p => ({ x: p.x * cr - p.y * sr, y: p.x * sr + p.y * cr + 10, V: p.V }));
+  const pts = sim.pts.map(p => ({ x: p.x * cr - p.y * sr, y: p.x * sr + p.y * cr + 10, V: p.V }));
   // Speed-milestone ticks (with local path normal so ticks sit perpendicular).
   const milestones = [];
   for (const tgt of [320, 360]) {
@@ -1370,7 +1434,6 @@ function getCJ() {
   // sits at θ* on the curl side of velocity (= +y at takeoff). So:
   //   combo (W+D / W+A): |45° − θ*(targetV)| toward the OUTSIDE of the curl
   //   W-only:            θ*(targetV) toward the INSIDE of the curl
-  const thetaEnd = Math.acos(Math.min(1, (W - Delta) / targetV));
   const comboOff = Math.PI / 4 - thetaEnd;            // radians; sign handled by curl below
   const viewYaw = Math.PI / 2 - curl * comboOff;      // world yaw to hold at the jump (combo keys)
   const offDeg   = (viewYaw - Math.PI / 2) * 180 / Math.PI;            // + = LEFT of track
@@ -1379,13 +1442,17 @@ function getCJ() {
   const comboKeys = curl === -1 ? 'W+D' : 'W+A';
   const last = pts[pts.length - 1];
   const startAng = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+  let startOffDeg = (startAng - Math.PI / 2) * 180 / Math.PI;  // + = left of track
+  while (startOffDeg > 180) startOffDeg -= 360;
+  while (startOffDeg <= -180) startOffDeg += 360;
   cjCache = {
     key, pts, milestones,
     start: { x: pts[0].x, y: pts[0].y, ang: startAng },
     jump: { x: last.x, y: last.y, V: targetV, viewYaw,
             viewLabel: `${comboKeys}: aim ${fmtOff(offDeg)} · W-only: ${fmtOff(wOnlyDeg)}` },
     comboKeys,
-    sideLabel: curl === -1 ? 'up-LEFT, sweeping RIGHT' : 'up-RIGHT, sweeping LEFT',
+    sideLabel: `${Math.abs(Math.round(startOffDeg))}° off-track ${startOffDeg > 0 ? 'LEFT' : 'RIGHT'}` +
+               (classic ? ', big sweep ' : ', easing ') + (curl === -1 ? 'RIGHT' : 'LEFT'),
   };
   return cjCache;
 }
