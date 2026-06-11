@@ -191,7 +191,7 @@
       <div id="raceList" style="font-size:12px; line-height:1.6"></div>
       <div class="row" style="margin-top:4px"><span>You</span><span class="v" id="meRace">running…</span></div>
       <div style="color:var(--dim); font-size:11px; margin-top:6px; line-height:1.4">
-        <b style="color:#56d364">Bot1/bot2</b> aim at θ* (perfect). <b style="color:#22d3ee">Bot3</b>/<b style="color:#a78bfa">bot4</b> at +10%, <b style="color:#facc15">bot5</b>/<b style="color:#f87171">bot6</b> at +20%, <b style="color:#fb7185">bot7</b>/<b style="color:#d946ef">bot8</b> at +30% past θ*. Odd bots use LRLR, even use LLRR. Each bot has its own calibrated pre-tilt so the trajectory stays close to centerline. R resets every timer.
+        <b style="color:#56d364">Bot1/bot2</b> aim at θ* (perfect). <b style="color:#22d3ee">Bot3</b>/<b style="color:#a78bfa">bot4</b> at +10%, <b style="color:#facc15">bot5</b>/<b style="color:#f87171">bot6</b> at +20%, <b style="color:#fb7185">bot7</b>/<b style="color:#d946ef">bot8</b> at +30% past θ*. Odd bots use LRLR, even use LLRR. Each bot has its own calibrated pre-tilt so the trajectory stays close to centerline. Bots are <b>ghosts</b>: they race a virtual continuous floor (the pads only fit bot8's hops) — only YOU can fall in the void. R resets every timer.
       </div>
     </div>
 
@@ -504,7 +504,9 @@ const cfg = {
   sensitivity: 2.6,        // Chiro's q3config.cfg
   cl_mouseAccel: 0.2,      //
   m_yaw: 0.022,            // Q3 default, also Chiro's
-  m_pitch: -0.018,         // Chiro's (negative = standard FPS, not inverted)
+  m_pitch: -0.018,         // Chiro's q3config value. Q3 sign semantics are
+                           // preserved here: negative m_pitch = inverted
+                           // (mouse up → look down), same as the real engine.
   m_filter: 1,             // 1 = on (one-frame moving average)
   fps: 125,
   rate: 1,
@@ -526,6 +528,11 @@ function makeEntity(yaw) {
     runTime: 0, finishTime: null, finishSpeed: 0,
     // labels (set by callers)
     label: '', color: '#fff', strategy: null,
+    // ghost: defrag-style ghost racer — lands on a virtual continuous floor
+    // at z=0 and ignores pads / the void entirely. The pad layout only fits
+    // bot8's landing points, so non-ghost bots with better aim would die in
+    // the first few gaps. Only the player interacts with the pad map.
+    ghost: false,
     // thetaOffsetFrac: bot's air-strafe aim = θ* + frac*(θ_max − θ_min),
     // where the gaining zone runs from θ_min=acos(W/V) to θ_max=π/2. A
     // perfect bot uses frac=0. Positive shifts view *away* from velocity
@@ -566,6 +573,7 @@ const bot8 = makeEntity(Math.PI/2);
 bot8.label = 'bot8'; bot8.color = '#d946ef'; bot8.strategy = 'alt2'; bot8.thetaOffsetFrac = +0.30;
 
 const bots = [bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
+bots.forEach(b => { b.ghost = true; });  // see makeEntity: bots race the virtual floor
 
 let cam = me;
 const camCycle = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
@@ -595,12 +603,17 @@ let tNow = 0;
 let lessonState = '';
 
 // ───── Physics functions ─────
-function computeWish(yaw, fm, sm, gSpeed) {
+// um = upmove (jump). Q3's PM_CmdScale includes upmove in the scale, so on
+// the frame a jump actually fires (upmove=127 reaches PM_AirMove) horizontal
+// wishspeed drops to 320·√2/√3 ≈ 261.3 for W+strafe (226.3 for W only). On
+// later air frames vanilla clears upmove via PMF_JUMP_HELD-era handling /
+// the player releases, so um=0 there.
+function computeWish(yaw, fm, sm, gSpeed, um = 0) {
   if (fm === 0 && sm === 0) return null;
   const fx = Math.cos(yaw), fy = Math.sin(yaw);
   const rx = Math.sin(yaw), ry = -Math.cos(yaw);
-  const mx = Math.max(Math.abs(fm), Math.abs(sm));
-  const total = Math.hypot(fm, sm);
+  const mx = Math.max(Math.abs(fm), Math.abs(sm), Math.abs(um));
+  const total = Math.hypot(fm, sm, um);
   const scale = gSpeed * mx / (127 * total);
   const wx = fx*fm*scale + rx*sm*scale;
   const wy = fy*fm*scale + ry*sm*scale;
@@ -618,6 +631,29 @@ function applyAccel(e, wish, accel, dt) {
   e.vx += a * wish.dx; e.vy += a * wish.dy;
   return Math.hypot(e.vx, e.vy) - before;
 }
+// Accel + effective-wishspeed selection — single source of truth shared by
+// step() (the actual physics) and the HUD helpers (gainingZone /
+// computeOptimal), mirroring vanilla PM_WalkMove / PM_AirMove and CPMA's
+// PM_CPMAirMove:
+//   - ground: pm_accelerate, full wishspeed.
+//   - VQ3 air: pm_airaccelerate, full wishspeed.
+//   - CPM air, wishdir opposes velocity:   pm_airstopaccelerate (brake).
+//   - CPM air, pure strafe (W=0, A/D held): pm_strafeaccelerate, wishspeed
+//     capped at pm_wishspeed (=30). This is what enables CPM "snake".
+function accelSelect(e, fm, sm, wish) {
+  if (e.onGround) return { accel: PHYS.pm_accelerate, W: wish.speed };
+  let accel = PHYS.pm_airaccelerate;
+  let W = wish.speed;
+  if (PHYS.pm_aircontrol > 0) {  // CPM air rules
+    const dot = e.vx*wish.dx + e.vy*wish.dy;
+    if (dot < 0) accel = PHYS.pm_airstopaccelerate;
+    if (fm === 0 && sm !== 0) {
+      W = Math.min(W, PHYS.pm_wishspeed);
+      accel = PHYS.pm_strafeaccelerate;
+    }
+  }
+  return { accel, W };
+}
 function friction(e, dt) {
   if (!e.onGround) return;
   const s = Math.hypot(e.vx, e.vy);
@@ -630,12 +666,13 @@ function friction(e, dt) {
 function step(e, inputs, dt) {
   e.justLanded = false;
   e.currentInputs = inputs;
+  const jumping = e.onGround && inputs.jump;
   if (e.onGround) {
     // Mirror Q3 pmove order: PM_CheckJump runs BEFORE PM_WalkMove/PM_AirMove.
     // If jumping this frame, groundEntityNum is cleared and PM_AirMove runs —
     // PM_Friction is never called. Skipping friction on the jump frame is the
     // mechanism behind frame-perfect bunny-hop / strafe-jump speed retention.
-    if (inputs.jump) {
+    if (jumping) {
       e.vz = PHYS.jumpVelocity;
       e.onGround = false;
       e.z = 0.001;
@@ -647,29 +684,21 @@ function step(e, inputs, dt) {
       friction(e, dt);
     }
   }
-  const wish = computeWish(e.yaw, inputs.fm, inputs.sm, PHYS.gSpeed);
+  // On the jump frame upmove=127 is still in the cmd when PM_AirMove runs, so
+  // PM_CmdScale shrinks wishspeed (320 → 261.3 with W+strafe). Held space on
+  // LATER air frames is treated as released — our hold-to-auto-hop is a stand-
+  // in for frame-perfect re-presses, and a real player releases jump mid-air.
+  const wish = computeWish(e.yaw, inputs.fm, inputs.sm, PHYS.gSpeed, jumping ? 127 : 0);
 
-  // Acceleration selection mirrors bg_pmove.c's PM_AirMove (vanilla)
-  // vs CPMA's PM_CPMAirMove (CPM):
-  //   - VQ3 air: always pm_airaccelerate, full wishspeed.
-  //   - CPM air, wishdir opposes velocity:   pm_airstopaccelerate (brake).
-  //   - CPM air, pure strafe (W=0, A/D held): pm_strafeaccelerate, wishspeed
-  //     capped at pm_wishspeed (=30). This is what enables CPM "snake".
-  //   - CPM air, holding W: aircontrol kicks in AFTER PM_Accelerate, rotating
-  //     velocity toward the view direction.
-  let accel = e.onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
-  let effWish = wish;
+  // Acceleration + wishspeed via the shared selector (see accelSelect).
+  // CPM air + holding W additionally gets aircontrol AFTER PM_Accelerate,
+  // rotating velocity toward wishdir.
   const isCPMair = !e.onGround && PHYS.pm_aircontrol > 0;
-  if (isCPMair && wish) {
-    const dot = e.vx*wish.dx + e.vy*wish.dy;
-    if (dot < 0) accel = PHYS.pm_airstopaccelerate;
-    if (inputs.fm === 0 && inputs.sm !== 0) {
-      const cappedSpeed = Math.min(wish.speed, PHYS.pm_wishspeed);
-      effWish = { dx: wish.dx, dy: wish.dy, speed: cappedSpeed };
-      accel = PHYS.pm_strafeaccelerate;
-    }
+  if (wish) {
+    const sel = accelSelect(e, inputs.fm, inputs.sm, wish);
+    const effWish = (sel.W === wish.speed) ? wish : { dx: wish.dx, dy: wish.dy, speed: sel.W };
+    applyAccel(e, effWish, sel.accel, dt);
   }
-  applyAccel(e, effWish, accel, dt);
 
   // CPM Air Control — verbatim from OSP2's PM_AirControl (mirrors CPMA):
   //   * Only fires when movementDir is 0 (pure forward, W only) or 4 (pure
@@ -704,14 +733,14 @@ function step(e, inputs, dt) {
     // already crossed the lava plane in a gap. The inLava commit prevents
     // soft-landing on the next pad after a short jump while preserving the
     // natural arc of the fall — gravity keeps pulling, vx/vy keep coasting.
-    if (e.z <= 0 && e.vz <= 0 && onPad(e.x, e.y) && !e.inLava) {
+    if (e.z <= 0 && e.vz <= 0 && (e.ghost || (onPad(e.x, e.y) && !e.inLava))) {
       e.z = 0; e.vz = 0;
       e.onGround = true; e.justLanded = true;
       e.lastLandSpeed = Math.hypot(e.vx, e.vy);
       e.lastGain = e.lastLandSpeed - e.lastTakeoffSpeed;
       const lastLog = e.jumpLog[e.jumpLog.length - 1];
       if (lastLog) { lastLog.land = e.lastLandSpeed; lastLog.gain = e.lastGain; }
-    } else if (e.z < 0 && !onPad(e.x, e.y) && !e.inLava) {
+    } else if (!e.ghost && e.z < 0 && !onPad(e.x, e.y) && !e.inLava) {
       // Crossed the floor plane outside any pad — commit to falling. From
       // this frame on, no pad will catch us.
       e.inLava = true;
@@ -733,7 +762,7 @@ function step(e, inputs, dt) {
   // Without this you fly horizontally through the next pad's front face after
   // a short jump. Binary-search the nearest pad and push y back to whichever
   // face edge is closer; zero the normal-component of vy (Q3 slide), keep vx.
-  if (!e.fell && e.z < 0 && e.z > -TRACK.pad_thickness) {
+  if (!e.ghost && !e.fell && e.z < 0 && e.z > -TRACK.pad_thickness) {
     let lo = 0, hi = PAD_CENTERS.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
@@ -757,8 +786,8 @@ function step(e, inputs, dt) {
     }
   }
   // Walked off a pad → start falling. Don't change z yet; gravity will pull
-  // it down next frame.
-  if (e.onGround && !onPad(e.x, e.y)) {
+  // it down next frame. Ghosts run on a virtual continuous floor.
+  if (e.onGround && !e.ghost && !onPad(e.x, e.y)) {
     e.onGround = false;
   }
   // Track time + finish detection
@@ -957,7 +986,7 @@ $('specBtn').onclick = cycleCam;
 
 function applyEntityIdentity(e, src) {
   e.label = src.label; e.color = src.color; e.strategy = src.strategy;
-  e.thetaOffsetFrac = src.thetaOffsetFrac;
+  e.thetaOffsetFrac = src.thetaOffsetFrac; e.ghost = src.ghost;
 }
 
 // Spawn-yaw pre-tilt (degrees CW from +y, i.e. tilted toward +x).
@@ -988,7 +1017,7 @@ const PRE_TILT_DEG = { ...PRE_TILT_BY_PHYSICS.vq3 };
 function resetToStart() {
   // Save and restore identity (label/color/strategy/thetaOffsetFrac) across reset.
   const ents = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
-  const ids = ents.map(e => ({label: e.label, color: e.color, strategy: e.strategy, thetaOffsetFrac: e.thetaOffsetFrac}));
+  const ids = ents.map(e => ({label: e.label, color: e.color, strategy: e.strategy, thetaOffsetFrac: e.thetaOffsetFrac, ghost: e.ghost}));
   ents.forEach(e => Object.assign(e, makeEntity(Math.PI/2)));
   ents.forEach((e, i) => applyEntityIdentity(e, ids[i]));
   // Side-by-side at the same Y as the player. Pre-tilt yaw rightward to
@@ -1021,6 +1050,9 @@ function kickEntityToSpeed(e, sp) {
   e.vx = sp * Math.cos(e.yaw); e.vy = sp * Math.sin(e.yaw);
 }
 function kickToCJ(e) {
+  // 390 ≈ a well-executed (not perfect) CJ. Theoretical prestrafe ceilings at
+  // 125fps with frame-perfect ground strafe: ~410 ups VQ3, ~432 ups CPM.
+  e.fell = false; e.inLava = false;  // un-commit a mid-fall entity so it can land again
   e.vx = 390 * Math.cos(e.yaw); e.vy = 390 * Math.sin(e.yaw);
   e.vz = PHYS.jumpVelocity; e.onGround = false; e.z = 0.01;
   e.lastTakeoffSpeed = 390; e.jumps += 1;
@@ -1073,9 +1105,9 @@ function frame() {
       sm: (keys.d ? 127 : 0) + (keys.a ? -127 : 0),
       jump: keys.space,  // auto-hop while held
     };
-    const wasGround = me.onGround;
+    const jumpsBefore = me.jumps;
     step(me, inputs, simDt);
-    if (wasGround && !me.onGround) playJumpGrunt();
+    if (me.jumps > jumpsBefore) playJumpGrunt();  // actual jump, not walking off an edge
     // Bots wait at the spawn until you press jump. The instant you do, reset
     // your race timer to 0 so all three start from the same t=0.
     if (!raceStarted && me.jumps > 0) {
@@ -1255,9 +1287,9 @@ function gainingZone() {
   if (!wish) return null;
   const V = Math.hypot(cam.vx, cam.vy);
   if (V < 30) return null;
-  const accel = cam.onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
-  const Delta = accel * (1/cfg.fps) * wish.speed;
-  const W_ = wish.speed;
+  const sel = accelSelect(cam, fm, sm, wish);
+  const Delta = sel.accel * (1/cfg.fps) * sel.W;
+  const W_ = sel.W;
   if (W_/V >= 1) return null; // can still accelerate at any angle including dead-ahead; no narrow zone
   const thetaMin = Math.acos(W_/V);
   const thetaMax = Math.acos(Math.max(-1, -Delta/(2*V)));
@@ -1289,9 +1321,9 @@ function computeOptimal() {
     cam._optYaw = null; cam._optOffsetDeg = null; cam._yourOffsetDeg = null;
     return;
   }
-  const accel = cam.onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
-  const Delta = accel * (1/cfg.fps) * wishP.speed;
-  const cosT = (wishP.speed - Delta) / V;
+  const sel = accelSelect(cam, fmP, smP, wishP);
+  const Delta = sel.accel * (1/cfg.fps) * sel.W;
+  const cosT = (sel.W - Delta) / V;
   const theta = cosT >= 1 ? 0 : Math.acos(Math.max(-1, cosT));
   const velAng = Math.atan2(cam.vy, cam.vx);
   const side = smP > 0 ? -1 : +1;
