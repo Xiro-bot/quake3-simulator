@@ -163,6 +163,13 @@
           <option value="cpm">CPM (CPMA)</option>
         </select>
       </label>
+      <label>CJ assist
+        <select id="cjAssist">
+          <option value="right" selected>curl right (W+D)</option>
+          <option value="left">curl left (W+A)</option>
+          <option value="off">off</option>
+        </select>
+      </label>
       <label>Bots
         <select id="botVis">
           <option value="1" selected>both visible</option>
@@ -513,6 +520,7 @@ const cfg = {
   botsVisible: '1',
   view: 'fp',
   physics: 'vq3',          // 'vq3' or 'cpm' — selects PHYSICS profile
+  cjAssist: 'right',       // circle-jump assistant: 'right' | 'left' | 'off'
 };
 
 // ───── State ─────
@@ -971,6 +979,7 @@ $('mfilter').onchange    = e => { cfg.m_filter = +e.target.value; };
 $('fps').onchange = e => cfg.fps = +e.target.value;
 $('rate').onchange = e => cfg.rate = +e.target.value;
 $('botVis').onchange = e => cfg.botsVisible = e.target.value;
+$('cjAssist').onchange = e => { cfg.cjAssist = e.target.value; };  // getCJ() cache keys on this
 $('phys').onchange = e => {
   cfg.physics = e.target.value;
   PHYS = PHYSICS[cfg.physics];
@@ -1305,6 +1314,81 @@ function gainingZone() {
     velAng, V, thetaOpt, thetaMin, thetaMax, side,
   };
 }
+// ─── Circle-jump assistant ───
+// Paints the ideal CJ trajectory on the start pad. The path is the per-frame
+// max-speed ground strafe for the ACTIVE physics + fps: friction, then
+// PM_Accelerate with wishdir held at θ* = acos((W−Δ)/V) on the curl side.
+// Below V ≈ W−Δ (294 vq3 / 282 cpm) θ* = 0, so the ideal line is STRAIGHT —
+// the curl only appears near the top. The sim runs in a local frame, is then
+// rotated so takeoff velocity points exactly down-track (+y), and anchored
+// just ahead of the spawn point. Jump target = a strong CJ for the physics
+// (theoretical frame-perfect ceilings: ~410 vq3, ~432 cpm).
+let cjCache = null;
+function getCJ() {
+  if (cfg.cjAssist === 'off') return null;
+  const key = cfg.physics + '|' + cfg.fps + '|' + cfg.cjAssist;
+  if (cjCache && cjCache.key === key) return cjCache;
+  const dt = 1 / cfg.fps;
+  const W = PHYS.gSpeed;
+  const Delta = PHYS.pm_accelerate * dt * W;
+  const targetV = PHYS.pm_aircontrol > 0 ? 420 : 390;
+  const curl = cfg.cjAssist === 'right' ? -1 : +1;  // wish side vs velocity; −1 curls velocity clockwise (rightward)
+  let vx = 0, vy = 0, x = 0, y = 0;
+  const raw = [{ x, y, V: 0 }];
+  for (let f = 0; f < 600; f++) {
+    let V = Math.hypot(vx, vy);
+    if (V >= targetV) break;
+    if (V >= 1) {
+      const control = Math.max(V, PHYS.pm_stopspeed);
+      const ns = Math.max(0, V - control * PHYS.pm_friction * dt);
+      vx *= ns / V; vy *= ns / V; V = ns;
+    } else { vx = 0; vy = 0; V = 0; }
+    const cosT = V > 1e-9 ? Math.min(1, (W - Delta) / V) : 1;
+    const theta = Math.acos(cosT);
+    const velAng = V > 1e-9 ? Math.atan2(vy, vx) : 0;
+    const wishAng = velAng + curl * theta;
+    const a = Math.min(Delta, Math.max(0, W - V * cosT));
+    vx += a * Math.cos(wishAng); vy += a * Math.sin(wishAng);
+    x += vx * dt; y += vy * dt;
+    raw.push({ x, y, V: Math.hypot(vx, vy) });
+  }
+  // Rotate so takeoff velocity = +y exactly; anchor the start just past the spawn line.
+  const rot = Math.PI / 2 - Math.atan2(vy, vx);
+  const cr = Math.cos(rot), sr = Math.sin(rot);
+  const pts = raw.map(p => ({ x: p.x * cr - p.y * sr, y: p.x * sr + p.y * cr + 10, V: p.V }));
+  // Speed-milestone ticks (with local path normal so ticks sit perpendicular).
+  const milestones = [];
+  for (const tgt of [320, 360]) {
+    const i = pts.findIndex(p => p.V >= tgt);
+    if (i > 0) {
+      const dx = pts[i].x - pts[i - 1].x, dy = pts[i].y - pts[i - 1].y;
+      const n = Math.hypot(dx, dy) || 1;
+      milestones.push({ x: pts[i].x, y: pts[i].y, nx: -dy / n, ny: dx / n, V: tgt });
+    }
+  }
+  // View guidance at takeoff. With W+strafe, view = wishdir ∓ 45°; wishdir
+  // sits at θ* on the curl side of velocity (= +y at takeoff). So:
+  //   combo (W+D / W+A): |45° − θ*(targetV)| toward the OUTSIDE of the curl
+  //   W-only:            θ*(targetV) toward the INSIDE of the curl
+  const thetaEnd = Math.acos(Math.min(1, (W - Delta) / targetV));
+  const comboOff = Math.PI / 4 - thetaEnd;            // radians; sign handled by curl below
+  const viewYaw = Math.PI / 2 - curl * comboOff;      // world yaw to hold at the jump (combo keys)
+  const offDeg   = (viewYaw - Math.PI / 2) * 180 / Math.PI;            // + = LEFT of track
+  const wOnlyDeg = (curl * thetaEnd) * 180 / Math.PI;                  // + = LEFT of track
+  const fmtOff = d => Math.abs(d) < 0.5 ? 'straight ahead' : Math.abs(d).toFixed(0) + '° ' + (d > 0 ? 'LEFT' : 'RIGHT');
+  const comboKeys = curl === -1 ? 'W+D' : 'W+A';
+  const last = pts[pts.length - 1];
+  const startAng = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+  cjCache = {
+    key, pts, milestones,
+    start: { x: pts[0].x, y: pts[0].y, ang: startAng },
+    jump: { x: last.x, y: last.y, V: targetV, viewYaw,
+            viewLabel: `${comboKeys}: aim ${fmtOff(offDeg)} · W-only: ${fmtOff(wOnlyDeg)}` },
+    comboKeys,
+    sideLabel: curl === -1 ? 'up-LEFT, sweeping RIGHT' : 'up-RIGHT, sweeping LEFT',
+  };
+  return cjCache;
+}
 function strokeLine(a, b, color, width=1.5, dashed=false) {
   ctx.strokeStyle = color; ctx.lineWidth = width;
   if (dashed) ctx.setLineDash([6,5]); else ctx.setLineDash([]);
@@ -1527,6 +1611,76 @@ function renderFirstPerson(W, H) {
       ctx.fillText(t, cTxt.x - m.width/2, cTxt.y);
     }
   }
+  // ── CJ assistant — painted on the start pad until the first jump ──
+  const cj = getCJ();
+  if (cj && cam === me && me.jumps === 0) {
+    const Z = 0.6;  // hair above the pad so the paint never z-fights the top fill
+    for (let i = 1; i < cj.pts.length; i++) {
+      const L = projectLine(cj.pts[i-1].x, cj.pts[i-1].y, Z, cj.pts[i].x, cj.pts[i].y, Z);
+      if (L) strokeLine(L[0], L[1], 'rgba(34,211,238,0.9)', 3.5);
+    }
+    // start arrow + hint
+    {
+      const S = cj.start;
+      const L = projectLine(S.x, S.y, Z, S.x + 45*Math.cos(S.ang), S.y + 45*Math.sin(S.ang), Z);
+      if (L) strokeLine(L[0], L[1], '#22d3ee', 2.5);
+      const sp = project(S.x, S.y, 16);
+      if (sp) {
+        const sz = Math.max(10, Math.min(16, sp.focal/sp.fwd * 1.6));
+        ctx.fillStyle = '#22d3ee'; ctx.font = `bold ${sz}px monospace`;
+        const t = `RUN ${cj.sideLabel}`;
+        ctx.fillText(t, sp.x - ctx.measureText(t).width/2, sp.y);
+      }
+    }
+    // speed milestone ticks
+    for (const ms of cj.milestones) {
+      const tick = projectLine(ms.x - 9*ms.nx, ms.y - 9*ms.ny, Z, ms.x + 9*ms.nx, ms.y + 9*ms.ny, Z);
+      if (tick) strokeLine(tick[0], tick[1], '#22d3ee', 2);
+      const lp = project(ms.x + 20*ms.nx, ms.y + 20*ms.ny, 3);
+      if (lp) {
+        ctx.fillStyle = 'rgba(34,211,238,0.85)';
+        ctx.font = `bold ${Math.max(9, Math.min(15, lp.focal/lp.fwd * 1.4))}px monospace`;
+        ctx.fillText(ms.V, lp.x, lp.y);
+      }
+    }
+    // jump ring
+    const J = cj.jump;
+    const RING = 16, SEG = 24;
+    for (let s = 0; s < SEG; s++) {
+      const a1 = s/SEG * 2*Math.PI, a2 = (s+1)/SEG * 2*Math.PI;
+      const L = projectLine(J.x + RING*Math.cos(a1), J.y + RING*Math.sin(a1), Z,
+                            J.x + RING*Math.cos(a2), J.y + RING*Math.sin(a2), Z);
+      if (L) strokeLine(L[0], L[1], '#56d364', 3);
+    }
+    // takeoff view arrow (white) — where the crosshair should point as you jump
+    {
+      const ax = Math.cos(J.viewYaw), ay = Math.sin(J.viewYaw);
+      const L = projectLine(J.x, J.y, Z, J.x + 80*ax, J.y + 80*ay, Z);
+      if (L) {
+        strokeLine(L[0], L[1], '#ffffff', 2.5);
+        const ang = Math.atan2(L[1].y - L[0].y, L[1].x - L[0].x);
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.moveTo(L[1].x, L[1].y);
+        ctx.lineTo(L[1].x - 9*Math.cos(ang - 0.4), L[1].y - 9*Math.sin(ang - 0.4));
+        ctx.lineTo(L[1].x - 9*Math.cos(ang + 0.4), L[1].y - 9*Math.sin(ang + 0.4));
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    // labels above the ring
+    {
+      const jl = project(J.x, J.y, 30);
+      if (jl) {
+        const sz = Math.max(11, Math.min(22, jl.focal/jl.fwd * 2));
+        ctx.fillStyle = '#56d364'; ctx.font = `bold ${sz}px monospace`;
+        const t1 = `JUMP ≥${J.V}`;
+        ctx.fillText(t1, jl.x - ctx.measureText(t1).width/2, jl.y - sz*1.15);
+        ctx.fillStyle = '#ffffff'; ctx.font = `${Math.round(sz*0.72)}px monospace`;
+        ctx.fillText(J.viewLabel, jl.x - ctx.measureText(J.viewLabel).width/2, jl.y);
+      }
+    }
+  }
+
   // Other avatars (everything we're NOT spectating, in painter's order by distance).
   {
     const others = [me, ...bots].filter(e => e !== cam);
@@ -1777,6 +1931,26 @@ function renderTopDown(W, H) {
     ctx.fillStyle = '#56d364'; ctx.font = 'bold 11px monospace';
     const lx = cx + (R+18)*Math.cos(zone.yawOpt), ly = cy - (R+18)*Math.sin(zone.yawOpt);
     ctx.fillText('★ MAX', lx - 18, ly + 4);
+  }
+
+  // CJ assistant overlay (matches the first-person painted path)
+  const cjTD = getCJ();
+  if (cjTD && cam === me && me.jumps === 0) {
+    ctx.strokeStyle = 'rgba(34,211,238,0.9)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    cjTD.pts.forEach((p, i) => {
+      const [tx, ty] = w2t(p.x, p.y);
+      i ? ctx.lineTo(tx, ty) : ctx.moveTo(tx, ty);
+    });
+    ctx.stroke();
+    const [jx, jy] = w2t(cjTD.jump.x, cjTD.jump.y);
+    ctx.strokeStyle = '#56d364'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(jx, jy, Math.max(4, 16*TD_SCALE), 0, Math.PI*2); ctx.stroke();
+    const [ex, ey] = w2t(cjTD.jump.x + 90*Math.cos(cjTD.jump.viewYaw),
+                         cjTD.jump.y + 90*Math.sin(cjTD.jump.viewYaw));
+    drawArrow(jx, jy, ex, ey, '#ffffff', 1.5);
+    ctx.fillStyle = '#56d364'; ctx.font = 'bold 10px monospace';
+    ctx.fillText(`CJ ≥${cjTD.jump.V}`, jx + 8, jy - 6);
   }
 
   // Trails — color per entity; cam entity drawn last (brightest).
@@ -2049,7 +2223,10 @@ function updateHUD() {
       cls = ''; lessonText = 'Speed is low. Get to ~320 on ground first (hold W+D, run forward).';
     }
   } else {
-    if (V < 50) {
+    const cjL = getCJ();
+    if (cjL && me.jumps === 0 && V < cjL.jump.V) {
+      lessonText = `<b>CJ assist:</b> run ${cjL.sideLabel} along the cyan line — it's the max-speed ground path for ${PHYS.name}. Jump inside the <b>green ring</b> at ≥${cjL.jump.V} ups; the white arrow is your crosshair direction at takeoff (${cjL.jump.viewLabel}).`;
+    } else if (V < 50) {
       lessonText = 'You\'re on the ground at low speed. Hold <b>W</b> to accelerate, ground accel is fast.';
     } else if (V < 315) {
       lessonText = `Accelerating on ground (cap = 320). Press <b>Space</b> when you're close to 320 to jump.`;
