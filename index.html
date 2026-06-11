@@ -609,6 +609,11 @@ const keys = { w:false, a:false, s:false, d:false, space:false };
 let yawRateHistory = []; // {t, rate}
 let lastYawForRate = me.yaw;
 let speedHist = []; // {t, me, bot}
+// Ghost-pad flashes: when a ghost bot lands where there's no pad, we draw a
+// faint fading disc under it so the virtual floor reads as support instead
+// of feet-on-nothing. {x, y, t, rgb}
+const ghostPads = [];
+const GHOST_PAD_FADE = 0.9;  // seconds
 let tNow = 0;
 let lessonState = '';
 
@@ -1045,7 +1050,7 @@ function resetToStart() {
   bot6.x = +90;  bot6.y = 0;  bot6.strafeSide = -1;  bot6.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot6);
   bot7.x =-120;  bot7.y = 0;  bot7.strafeSide = -1;  bot7.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot7);
   bot8.x =+120;  bot8.y = 0;  bot8.strafeSide = -1;  bot8.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot8);
-  speedHist.length = 0; yawRateHistory.length = 0;
+  speedHist.length = 0; yawRateHistory.length = 0; ghostPads.length = 0;
   sessionPeak = 0;
   raceStarted = false;
   // Refresh cam-button label
@@ -1126,7 +1131,14 @@ function frame() {
       me.runTime = 0;
     }
     if (raceStarted) {
-      for (const b of bots) botStep(b, simDt);
+      for (const b of bots) {
+        botStep(b, simDt);
+        if (b.justLanded && !onPad(b.x, b.y)) {
+          const n = parseInt(b.color.slice(1), 16);
+          ghostPads.push({ x: b.x, y: b.y, t: tNow, rgb: `${(n>>16)&255},${(n>>8)&255},${n&255}` });
+          if (ghostPads.length > 64) ghostPads.shift();
+        }
+      }
     } else {
       me.runTime = 0;
     }
@@ -1678,6 +1690,24 @@ function renderFirstPerson(W, H) {
       ctx.fillText(t, cTxt.x - m.width/2, cTxt.y);
     }
   }
+  // ── Ghost-pad flashes — faint disc under a bot landing in a gap ──
+  while (ghostPads.length && ghostPads[0].t < tNow - GHOST_PAD_FADE) ghostPads.shift();
+  if (cfg.botsVisible !== '0') {
+    for (const gp of ghostPads) {
+      const age = (tNow - gp.t) / GHOST_PAD_FADE;   // 0..1
+      if (age < 0 || age > 1) continue;
+      const R = 26 + 14 * age;                       // expands slightly as it fades
+      const alpha = 0.38 * (1 - age);
+      const SEG = 14;
+      const corners = [];
+      for (let s = 0; s < SEG; s++) {
+        const a = s / SEG * 2 * Math.PI;
+        corners.push([gp.x + R * Math.cos(a), gp.y + R * Math.sin(a), 0.4]);
+      }
+      fillPoly(projPolygonClipped(corners), `rgba(${gp.rgb},${alpha.toFixed(3)})`);
+    }
+  }
+
   // ── CJ assistant — painted on the start pad until the first jump ──
   const cj = getCJ();
   if (cj && cam === me && me.jumps === 0) {
@@ -1998,6 +2028,17 @@ function renderTopDown(W, H) {
     ctx.fillStyle = '#56d364'; ctx.font = 'bold 11px monospace';
     const lx = cx + (R+18)*Math.cos(zone.yawOpt), ly = cy - (R+18)*Math.sin(zone.yawOpt);
     ctx.fillText('★ MAX', lx - 18, ly + 4);
+  }
+
+  // Ghost-pad flashes (same data as first-person view)
+  if (cfg.botsVisible !== '0') {
+    for (const gp of ghostPads) {
+      const age = (tNow - gp.t) / GHOST_PAD_FADE;
+      if (age < 0 || age > 1) continue;
+      const [px, py] = w2t(gp.x, gp.y);
+      ctx.fillStyle = `rgba(${gp.rgb},${(0.35 * (1 - age)).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(px, py, Math.max(2.5, (26 + 14 * age) * TD_SCALE), 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   // CJ assistant overlay (matches the first-person painted path)
