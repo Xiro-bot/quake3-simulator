@@ -1683,8 +1683,17 @@ function cjBotStep(dt) {
   if (cjBot._frame >= f.length) { cjBot._frame = 0; cjBot.trail.length = 0; cjBot._peak = 0; }  // loop: drop trail + reset per-jump peak
   cjBot._peak = Math.max(cjBot._peak || 0, Math.hypot(cjBot.vx, cjBot.vy));
   const fr = f[cjBot._frame++];
-  cjBot.x = fr.x; cjBot.y = fr.y; cjBot.z = fr.z; cjBot.yaw = fr.yaw;
+  cjBot.x = fr.x; cjBot.y = fr.y; cjBot.z = fr.z;
   cjBot.vx = fr.vx; cjBot.vy = fr.vy; cjBot.onGround = fr.onGround;
+  // Spectator camera looks straight down-track (+y) toward the landing platform
+  // the whole time, so you can see where the jump lands. We do NOT use the
+  // bot's real aim: air-strafing sweeps the crosshair 80–90° side to side (and
+  // the ground curl spirals ~150°), which would whip the view. The actual
+  // optimal mouse aim — including the apex side-flip — is shown by the ★
+  // gaining-zone overlay, offset from this fixed-ahead view. fr.aimYaw retains
+  // the bot's true aim for reference.
+  cjBot.aimYaw = fr.yaw;
+  cjBot.yaw = Math.PI / 2;
   cjBot.currentInputs = fr.inputs;
   cjBot._phase = fr.onGround ? (fr.V < 5 && cjBot._frame > 2 ? 'landed' : 'approach') : 'air';
 }
