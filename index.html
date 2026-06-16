@@ -157,6 +157,12 @@
           <option value="0.1">0.1× crawl</option>
         </select>
       </label>
+      <label>Map
+        <select id="map">
+          <option value="strafe" selected>Strafe run (pad track)</option>
+          <option value="cj">CJ gap (jump the void)</option>
+        </select>
+      </label>
       <label>Physics
         <select id="phys">
           <option value="vq3" selected>VQ3 (vanilla Q3)</option>
@@ -483,20 +489,29 @@ const BOT8_LANDINGS = [
   22707, 23858.2, 25028.2, 26216.6, 27423.2, 28647.5, 29889.4,
 ];
 // Start pad at y=75 (covers [0, 150]) so the spawn position is on a pad.
-const PAD_CENTERS = [75, ...BOT8_LANDINGS];
+// PAD_CENTERS / PAD_HALVES are LIVE arrays swapped by the active map (see
+// MAPS / applyMap). Strafe map = the 36-pad track (all halves = PAD_RADIUS);
+// CJ map = two big platforms with a void between them. PAD_HALVES is parallel
+// to PAD_CENTERS so each pad can have its own half-length.
+const STRAFE_CENTERS = [75, ...BOT8_LANDINGS];
+let PAD_CENTERS = STRAFE_CENTERS.slice();
+let PAD_HALVES  = STRAFE_CENTERS.map(() => PAD_RADIUS);
 function onPad(x, y) {
   // Allow the player's bounding box to overhang the pad by PLAYER_RADIUS.
   // Wall clamping already constrains x, so the x-check here is informational.
   if (x < -TRACK.width/2 - PLAYER_RADIUS || x > TRACK.width/2 + PLAYER_RADIUS) return false;
-  if (y < -PLAYER_RADIUS || y > TRACK.length + PLAYER_RADIUS) return false;
+  // Fast reject outside the pad span. Bounds come from the actual first/last
+  // pad (the CJ map's start platform extends to negative y), NOT a fixed 0.
+  const nP = PAD_CENTERS.length;
+  if (y < PAD_CENTERS[0] - PAD_HALVES[0] - PLAYER_RADIUS ||
+      y > PAD_CENTERS[nP-1] + PAD_HALVES[nP-1] + PLAYER_RADIUS) return false;
   let lo = 0, hi = PAD_CENTERS.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if (PAD_CENTERS[mid] < y) lo = mid + 1; else hi = mid;
   }
-  const reach = PAD_RADIUS + PLAYER_RADIUS;
-  if (lo < PAD_CENTERS.length && Math.abs(PAD_CENTERS[lo] - y) <= reach) return true;
-  if (lo > 0 && Math.abs(PAD_CENTERS[lo - 1] - y) <= reach) return true;
+  if (lo < PAD_CENTERS.length && Math.abs(PAD_CENTERS[lo] - y) <= PAD_HALVES[lo] + PLAYER_RADIUS) return true;
+  if (lo > 0 && Math.abs(PAD_CENTERS[lo - 1] - y) <= PAD_HALVES[lo - 1] + PLAYER_RADIUS) return true;
   return false;
 }
 const EYE_HEIGHT = 26;  // Q3 player view height when standing
@@ -523,6 +538,7 @@ const cfg = {
   view: 'fp',
   physics: 'vq3',          // 'vq3' or 'cpm' — selects PHYSICS profile
   cjAssist: 'right',       // circle-jump assistant: 'right' | 'left' | 'off'
+  map: 'strafe',           // 'strafe' (pad track) | 'cj' (single-gap CJ trainer)
 };
 
 // ───── State ─────
@@ -585,8 +601,25 @@ bot8.label = 'bot8'; bot8.color = '#d946ef'; bot8.strategy = 'alt2'; bot8.thetaO
 const bots = [bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
 bots.forEach(b => { b.ghost = true; });  // see makeEntity: bots race the virtual floor
 
+// The single perfect-CJ demo bot (CJ map only). It is a REPLAY ghost: each
+// frame it is teleported onto a precomputed perfect circle-jump trajectory
+// (buildCJ → frames[]), loops forever, and never collides. Spectate it to see
+// the ideal approach curl, the takeoff mouse angle, and the gap clearance.
+const cjBot = makeEntity(Math.PI/2);
+cjBot.label = 'CJbot'; cjBot.color = '#56d364'; cjBot.ghost = true; cjBot.isCJ = true;
+cjBot._frame = 0; cjBot._holdT = 0; cjBot._phase = 'approach';
+
+// Racers actually present on the active map (strafe = the 8 ghosts, CJ = the
+// one demo bot). Used by the sim loop and every render/trail iteration so the
+// inactive set is neither stepped nor drawn.
+function racers() { return cfg.map === 'cj' ? [cjBot] : bots; }
+
 let cam = me;
-const camCycle = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
+let camCycle = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
+function rebuildCamCycle() {
+  camCycle = cfg.map === 'cj' ? [me, cjBot] : [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
+  if (!camCycle.includes(cam)) cam = me;
+}
 function setCam(target) {
   cam = target;
   // Spectating a bot: clear player input so 'me' stops moving in the background.
@@ -786,8 +819,8 @@ function step(e, inputs, dt) {
     for (const idx of [lo, lo - 1]) {
       if (idx < 0 || idx >= PAD_CENTERS.length) continue;
       const c = PAD_CENTERS[idx];
-      const yLo = c - PAD_RADIUS - PLAYER_RADIUS;  // front face (with radius)
-      const yHi = c + PAD_RADIUS + PLAYER_RADIUS;  // back face
+      const yLo = c - PAD_HALVES[idx] - PLAYER_RADIUS;  // front face (with radius)
+      const yHi = c + PAD_HALVES[idx] + PLAYER_RADIUS;  // back face
       if (e.y > yLo && e.y < yHi) {
         if (e.y - yLo < yHi - e.y) {
           e.y = yLo;
@@ -983,10 +1016,15 @@ $('sensitivity').oninput = e => { cfg.sensitivity = +e.target.value; };
 $('mouseAccel').oninput  = e => { cfg.cl_mouseAccel = +e.target.value; };
 $('myaw').oninput        = e => { cfg.m_yaw = +e.target.value; };
 $('mfilter').onchange    = e => { cfg.m_filter = +e.target.value; };
-$('fps').onchange = e => cfg.fps = +e.target.value;
+$('fps').onchange = e => { cfg.fps = +e.target.value; resetToStart(); };  // CJ geometry is fps-dependent
 $('rate').onchange = e => cfg.rate = +e.target.value;
 $('botVis').onchange = e => cfg.botsVisible = e.target.value;
-$('cjAssist').onchange = e => { cfg.cjAssist = e.target.value; };  // getCJ() cache keys on this
+$('cjAssist').onchange = e => { cfg.cjAssist = e.target.value; cjPlanCache = null; resetToStart(); };  // getCJ()/buildCJ() cache key
+$('map').onchange = e => {
+  cfg.map = e.target.value;
+  cam = me;                     // never leave the camera on a now-hidden bot
+  resetToStart();               // applyMap() inside rebuilds geometry + cam cycle
+};
 $('phys').onchange = e => {
   cfg.physics = e.target.value;
   PHYS = PHYSICS[cfg.physics];
@@ -1031,6 +1069,10 @@ const PRE_TILT_BY_PHYSICS = {
 const PRE_TILT_DEG = { ...PRE_TILT_BY_PHYSICS.vq3 };
 
 function resetToStart() {
+  applyMap();           // set pad layout + track length for the active map first
+  rebuildCamCycle();
+  // CJ demo bot back to the top of its replay loop.
+  cjBot._frame = 0; cjBot._holdT = 0; cjBot.trail.length = 0;
   // Save and restore identity (label/color/strategy/thetaOffsetFrac) across reset.
   const ents = [me, bot1, bot2, bot3, bot4, bot5, bot6, bot7, bot8];
   const ids = ents.map(e => ({label: e.label, color: e.color, strategy: e.strategy, thetaOffsetFrac: e.thetaOffsetFrac, ghost: e.ghost}));
@@ -1050,6 +1092,13 @@ function resetToStart() {
   bot6.x = +90;  bot6.y = 0;  bot6.strafeSide = -1;  bot6.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot6);
   bot7.x =-120;  bot7.y = 0;  bot7.strafeSide = -1;  bot7.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot7);
   bot8.x =+120;  bot8.y = 0;  bot8.strafeSide = -1;  bot8.yaw = Math.PI/2 + tiltRad(PRE_TILT_DEG.bot8);
+  // CJ map: the player spawns near the back of the start platform with a real
+  // run-up to the takeoff edge; the demo bot is placed by its replay frames.
+  if (cfg.map === 'cj') {
+    const p = buildCJ();
+    me.x = 0; me.y = p.spawn.y; me.yaw = Math.PI/2;
+    cjBotStep(1/cfg.fps);   // place the bot on frame 0 immediately
+  }
   speedHist.length = 0; yawRateHistory.length = 0; ghostPads.length = 0;
   sessionPeak = 0;
   raceStarted = false;
@@ -1130,7 +1179,10 @@ function frame() {
       raceStarted = true;
       me.runTime = 0;
     }
-    if (raceStarted) {
+    if (cfg.map === 'cj') {
+      cjBotStep(simDt);   // demo bot loops continuously, independent of the race gate
+      if (!raceStarted) me.runTime = 0;
+    } else if (raceStarted) {
       for (const b of bots) {
         botStep(b, simDt);
         if (b.justLanded && !onPad(b.x, b.y)) {
@@ -1153,14 +1205,14 @@ function frame() {
     while (yawRateHistory.length > 30) yawRateHistory.shift();
     lastYawForRate = me.yaw;
     // trails
-    for (const e of [me, ...bots]) {
+    for (const e of [me, ...racers()]) {
       e.trail.push([e.x, e.y, e.z, e.onGround]);
       if (e.trail.length > 1200) e.trail.shift();
     }
     // speed history — record forward (+y) speed for each racer.
     const sample = { t: tNow, fwd: { me: me.vy } };
     let peakNow = Math.hypot(me.vx, me.vy);
-    bots.forEach(b => {
+    racers().forEach(b => {
       sample.fwd[b.label] = b.vy;
       const sb = Math.hypot(b.vx, b.vy);
       if (sb > peakNow) peakNow = sb;
@@ -1468,6 +1520,138 @@ function getCJ() {
   };
   return cjCache;
 }
+// ─── CJ-gap map: geometry + perfect-CJ replay plan ───
+// One precompute (cached per physics|fps|curl) yields BOTH the map layout
+// (start platform → void → landing platform) and the demo bot's trajectory:
+//   1. Ground approach = getCJ()'s ideal circle-jump path, re-anchored so the
+//      takeoff sits at x=0 on the platform edge, pointed straight down-track.
+//   2. Air arc = a real-physics single jump (W-only, ballistic) from that
+//      takeoff at target CJ speed, simulated until it falls back to z=0.
+// The gap is sized to that air distance minus CJ_LAND_MARGIN, so a perfect CJ
+// lands just onto the far platform and anything weaker drops into the void.
+// The frame-perfect optimal circle jump is compact (~70 ups: Q3 ground accel
+// is fast), so the start platform reaches WELL behind the optimal curl to give
+// a human room to prestrafe up to speed before tracing the final curl. The
+// player spawns near the back; the bot demos the optimal curl near the edge.
+const CJ_START_BACK  = 520;   // start platform extends to −this (player run-up room)
+const CJ_SPAWN_BACK  = 440;   // where the player spawns (ups behind the optimal path start)
+const CJ_LAND_MARGIN = 40;    // how far past the near edge the perfect CJ lands
+const CJ_LAND_LEN    = 1400;  // landing-platform depth
+let cjPlanCache = null;
+function buildCJ() {
+  const curlName = (cfg.cjAssist === 'off' || cfg.cjAssist.startsWith('classic'))
+    ? 'right' : cfg.cjAssist;   // always need a concrete greedy curl for the bot
+  const key = cfg.physics + '|' + cfg.fps + '|' + curlName;
+  if (cjPlanCache && cjPlanCache.key === key) return cjPlanCache;
+  const dt = 1 / cfg.fps;
+
+  // Borrow getCJ's ideal ground path (greedy curl). Temporarily force a
+  // concrete fastest curl so 'off'/'classic' still yield a usable demo path.
+  const savedAssist = cfg.cjAssist;
+  cfg.cjAssist = curlName;
+  const cj = getCJ();
+  cfg.cjAssist = savedAssist;
+
+  const gpts = cj.pts;                       // local frame: takeoff vel = +y
+  const last = gpts[gpts.length - 1];
+  const dx = -last.x;                        // takeoff → x = 0 (corridor centre)
+  const dy = -gpts[0].y;                     // spawn → y = 0
+  const takeoffY = last.y + dy;              // = path length
+  const Vto = cj.jump.V;                     // target takeoff speed (390 vq3 / 420 cpm)
+
+  // Ground frames (replay): position + view yaw tracking the wish, speed-derived
+  // velocity. View yaw = velocity tangent + curl·θ* (the W-only model getCJ paints).
+  const W = PHYS.gSpeed, Delta = PHYS.pm_accelerate * dt * W;
+  const curl = curlName.endsWith('right') ? -1 : +1;
+  const frames = [];
+  const groundFloor = [];
+  for (let i = 0; i < gpts.length; i++) {
+    const wx = gpts[i].x + dx, wy = gpts[i].y + dy, V = gpts[i].V;
+    groundFloor.push({ x: wx, y: wy, V });
+    let tang = Math.PI / 2;                   // default down-track (first frame)
+    if (i > 0) tang = Math.atan2(gpts[i].y - gpts[i-1].y, gpts[i].x - gpts[i-1].x);
+    const yaw = tang + curl * Math.acos(Math.min(1, V > 1 ? (W - Delta) / V : 1));
+    frames.push({ x: wx, y: wy, z: 0, yaw, vx: V*Math.cos(tang), vy: V*Math.sin(tang),
+                  V, onGround: true, inputs: { fm: 127, sm: 127*(-curl), jump: i === gpts.length-1 } });
+  }
+
+  // Air arc: real physics, single jump, W-only (ballistic). Stop when it falls
+  // back through z=0 (where the far platform's surface is).
+  const air = makeEntity(Math.PI/2);
+  air.x = 0; air.y = takeoffY; air.z = 0.01; air.vx = 0; air.vy = Vto;
+  air.vz = PHYS.jumpVelocity; air.onGround = false; air.ghost = true;
+  const airInputs = { fm: 127, sm: 0, jump: false };
+  const airFloor = [{ x: 0, y: takeoffY }];
+  let ascended = false;
+  for (let f = 0; f < 600; f++) {
+    step(air, airInputs, dt);
+    frames.push({ x: air.x, y: air.y, z: air.z, yaw: Math.PI/2,
+                  vx: air.vx, vy: air.vy, V: Math.hypot(air.vx, air.vy),
+                  onGround: false, inputs: airInputs });
+    airFloor.push({ x: air.x, y: air.y });
+    if (air.vz < 0) ascended = true;
+    if (ascended && air.z <= 0) break;
+  }
+  const landY = air.y;
+  const airDist = landY - takeoffY;
+  const landStart = takeoffY + Math.max(40, airDist - CJ_LAND_MARGIN);
+  const landEnd = landStart + CJ_LAND_LEN;
+
+  // Settle frames: stand on the far platform a beat before the replay loops.
+  for (let f = 0; f < Math.round(cfg.fps * 0.8); f++) {
+    frames.push({ x: 0, y: landY, z: 0, yaw: Math.PI/2, vx: 0, vy: 0, V: 0,
+                  onGround: true, inputs: { fm: 0, sm: 0, jump: false } });
+  }
+
+  // Two platforms as pads (ascending centres for onPad's binary search).
+  const startC = (-CJ_START_BACK + takeoffY) / 2, startH = (takeoffY + CJ_START_BACK) / 2;
+  const landC = (landStart + landEnd) / 2,        landH  = (landEnd - landStart) / 2;
+  const milestones = cj.milestones.map(m => ({ ...m, x: m.x + dx, y: m.y + dy }));
+
+  // Player spawn + a straight prestrafe lead-in painted from spawn to the
+  // optimal curl's start, so the player knows to run up to speed first.
+  const spawnY = -CJ_SPAWN_BACK;
+  groundFloor.unshift({ x: 0, y: spawnY, V: 0 });
+
+  cjPlanCache = {
+    key, frames, groundFloor, airFloor, milestones,
+    takeoffY, landStart, landEnd, landY, airDist, trackLen: landEnd,
+    startC, startH, landC, landH,
+    jumpView: { yaw: cj.jump.viewYaw, label: cj.jump.viewLabel, V: Vto },
+    sideLabel: cj.sideLabel,
+    spawn: { x: 0, y: spawnY },
+    curlStart: { x: groundFloor[1].x, y: groundFloor[1].y },
+    takeoff: { x: 0, y: takeoffY },
+  };
+  return cjPlanCache;
+}
+
+// Set the live pad layout + track length for the active map.
+function applyMap() {
+  if (cfg.map === 'cj') {
+    const p = buildCJ();
+    PAD_CENTERS = [p.startC, p.landC];
+    PAD_HALVES  = [p.startH, p.landH];
+    TRACK.length = p.trackLen;
+  } else {
+    PAD_CENTERS = STRAFE_CENTERS.slice();
+    PAD_HALVES  = STRAFE_CENTERS.map(() => PAD_RADIUS);
+    TRACK.length = 30000;
+  }
+}
+
+// Advance the CJ demo bot one sim frame along its replay plan; loop at the end.
+function cjBotStep(dt) {
+  const plan = buildCJ();
+  const f = plan.frames;
+  if (cjBot._frame >= f.length) { cjBot._frame = 0; cjBot.trail.length = 0; }  // loop: drop the old trail so the teleport-back isn't drawn
+  const fr = f[cjBot._frame++];
+  cjBot.x = fr.x; cjBot.y = fr.y; cjBot.z = fr.z; cjBot.yaw = fr.yaw;
+  cjBot.vx = fr.vx; cjBot.vy = fr.vy; cjBot.onGround = fr.onGround;
+  cjBot.currentInputs = fr.inputs;
+  cjBot._phase = fr.onGround ? (fr.V < 5 && cjBot._frame > 2 ? 'landed' : 'approach') : 'air';
+}
+
 function strokeLine(a, b, color, width=1.5, dashed=false) {
   ctx.strokeStyle = color; ctx.lineWidth = width;
   if (dashed) ctx.setLineDash([6,5]); else ctx.setLineDash([]);
@@ -1591,14 +1775,14 @@ function renderFirstPerson(W, H) {
   // front of the near pad and the whole thing looks transparent.
   const padOrder = [];
   for (let k = 0; k < PAD_CENTERS.length; k++) {
-    const c = PAD_CENTERS[k];
-    if (c + PAD_RADIUS < yViewMin || c - PAD_RADIUS > yViewMax) continue;
+    const c = PAD_CENTERS[k], h = PAD_HALVES[k];
+    if (c + h < yViewMin || c - h > yViewMax) continue;
     padOrder.push({ k, dist: Math.abs(c - cam.y) });
   }
   padOrder.sort((a, b) => b.dist - a.dist);
   for (const { k } of padOrder) {
-    const y1 = PAD_CENTERS[k] - PAD_RADIUS;
-    const y2 = PAD_CENTERS[k] + PAD_RADIUS;
+    const y1 = PAD_CENTERS[k] - PAD_HALVES[k];
+    const y2 = PAD_CENTERS[k] + PAD_HALVES[k];
     // Within a single pad: also painter-sort the front/back faces so the
     // face closer to the camera is drawn LAST (occludes the further one).
     const frontCloser = Math.abs(y1 - cam.y) < Math.abs(y2 - cam.y);
@@ -1709,8 +1893,34 @@ function renderFirstPerson(W, H) {
   }
 
   // ── CJ assistant — painted on the start pad until the first jump ──
+  // ── CJ-gap: optimal trajectory painted on the floor (always visible) ──
+  if (cfg.map === 'cj') {
+    const p = buildCJ();
+    const Z = 0.6;
+    for (let i = 1; i < p.groundFloor.length; i++) {
+      const L = projectLine(p.groundFloor[i-1].x, p.groundFloor[i-1].y, Z, p.groundFloor[i].x, p.groundFloor[i].y, Z);
+      if (L) strokeLine(L[0], L[1], 'rgba(34,211,238,0.9)', i === 1 ? 2.5 : 3.5, i === 1);  // i=1 = dashed prestrafe lead-in
+    }
+    for (let i = 1; i < p.airFloor.length; i++) {  // air arc → floor projection (the leap over the void)
+      const L = projectLine(p.airFloor[i-1].x, p.airFloor[i-1].y, Z, p.airFloor[i].x, p.airFloor[i].y, Z);
+      if (L) strokeLine(L[0], L[1], 'rgba(255,196,0,0.85)', 3, true);
+    }
+    for (const ms of p.milestones) {
+      const tick = projectLine(ms.x - 9*ms.nx, ms.y - 9*ms.ny, Z, ms.x + 9*ms.nx, ms.y + 9*ms.ny, Z);
+      if (tick) strokeLine(tick[0], tick[1], '#22d3ee', 2);
+      const lp = project(ms.x + 20*ms.nx, ms.y + 20*ms.ny, 3);
+      if (lp) { ctx.fillStyle='rgba(34,211,238,0.85)'; ctx.font=`bold ${Math.max(9,Math.min(15,lp.focal/lp.fwd*1.4))}px monospace`; ctx.fillText(ms.V, lp.x, lp.y); }
+    }
+    const J = p.takeoff, RING = 16, SEG = 24;
+    for (let s=0;s<SEG;s++){const a1=s/SEG*2*Math.PI,a2=(s+1)/SEG*2*Math.PI;const L=projectLine(J.x+RING*Math.cos(a1),J.y+RING*Math.sin(a1),Z,J.x+RING*Math.cos(a2),J.y+RING*Math.sin(a2),Z);if(L)strokeLine(L[0],L[1],'#56d364',3);}
+    { const ax=Math.cos(p.jumpView.yaw),ay=Math.sin(p.jumpView.yaw);const L=projectLine(J.x,J.y,Z,J.x+80*ax,J.y+80*ay,Z);
+      if(L){strokeLine(L[0],L[1],'#ffffff',2.5);const ang=Math.atan2(L[1].y-L[0].y,L[1].x-L[0].x);ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(L[1].x,L[1].y);ctx.lineTo(L[1].x-9*Math.cos(ang-0.4),L[1].y-9*Math.sin(ang-0.4));ctx.lineTo(L[1].x-9*Math.cos(ang+0.4),L[1].y-9*Math.sin(ang+0.4));ctx.closePath();ctx.fill();} }
+    { const jl=project(J.x,J.y,30); if(jl){const sz=Math.max(11,Math.min(22,jl.focal/jl.fwd*2));ctx.fillStyle='#56d364';ctx.font=`bold ${sz}px monospace`;const t1=`JUMP ≥${p.jumpView.V}`;ctx.fillText(t1,jl.x-ctx.measureText(t1).width/2,jl.y-sz*1.15);ctx.fillStyle='#ffffff';ctx.font=`${Math.round(sz*0.72)}px monospace`;ctx.fillText(p.jumpView.label,jl.x-ctx.measureText(p.jumpView.label).width/2,jl.y);} }
+    { const lc=project(0, p.landY, 16); if(lc){ctx.fillStyle='rgba(255,196,0,0.95)';ctx.font='bold 13px monospace';const t='◎ LAND';ctx.fillText(t,lc.x-ctx.measureText(t).width/2,lc.y);} }
+  }
+
   const cj = getCJ();
-  if (cj && cam === me && me.jumps === 0) {
+  if (cj && cfg.map !== 'cj' && cam === me && me.jumps === 0) {
     const Z = 0.6;  // hair above the pad so the paint never z-fights the top fill
     for (let i = 1; i < cj.pts.length; i++) {
       const L = projectLine(cj.pts[i-1].x, cj.pts[i-1].y, Z, cj.pts[i].x, cj.pts[i].y, Z);
@@ -1780,7 +1990,7 @@ function renderFirstPerson(W, H) {
 
   // Other avatars (everything we're NOT spectating, in painter's order by distance).
   {
-    const others = [me, ...bots].filter(e => e !== cam);
+    const others = [me, ...racers()].filter(e => e !== cam);
     const visible = others.filter(e => e === me || cfg.botsVisible !== '0');
     // sort far→near so closer ones overdraw
     const projected = visible.map(e => {
@@ -1902,10 +2112,34 @@ function renderFirstPerson(W, H) {
 
   // Spectator / play indicator (top-left)
   ctx.fillStyle = cam.color; ctx.font = 'bold 11px monospace';
-  const camTag = (cam === me)
-    ? `◉ PLAYING (you) — V to spectate bots`
-    : `◉ SPECTATING ${cam.label.toUpperCase()} (${cam.strategy === 'alt1' ? 'switch every jump' : 'switch every 2 jumps'}) — V cycles view`;
+  let camTag;
+  if (cam === me) camTag = `◉ PLAYING (you) — V to ${cfg.map === 'cj' ? 'spectate the CJ bot' : 'spectate bots'}`;
+  else if (cam === cjBot) camTag = `◉ SPECTATING CJ BOT — ${cjBot._phase.toUpperCase()} — V returns to you`;
+  else camTag = `◉ SPECTATING ${cam.label.toUpperCase()} (${cam.strategy === 'alt1' ? 'switch every jump' : 'switch every 2 jumps'}) — V cycles view`;
   ctx.fillText(camTag, 14, 16);
+
+  // ── CJ-gap: optimal takeoff mouse angle panel (top-center). The headline
+  // answer to "what angle clears the gap with max speed" — shown always, and
+  // especially while spectating the bot do the perfect jump. ──
+  if (cfg.map === 'cj') {
+    const p = buildCJ();
+    const lines = [
+      `CIRCLE-JUMP · ${PHYS.name}`,
+      `Takeoff @ ≥${p.jumpView.V} ups · gap ${Math.round(p.landStart - p.takeoffY)} ups`,
+      `Aim at jump:  ${p.jumpView.label}`,
+      `Approach run:  ${p.sideLabel}`,
+    ];
+    ctx.font = 'bold 13px monospace';
+    let wMax = 0; for (const l of lines) wMax = Math.max(wMax, ctx.measureText(l).width);
+    const bx = W/2 - wMax/2 - 12, by = 14, lh = 18, bh = lines.length*lh + 12;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(bx, by, wMax + 24, bh);
+    ctx.strokeStyle = 'rgba(86,211,100,0.5)'; ctx.lineWidth = 1; ctx.strokeRect(bx, by, wMax + 24, bh);
+    lines.forEach((l, i) => {
+      ctx.fillStyle = i === 0 ? '#56d364' : (i === 2 ? '#ffffff' : '#9fb0c0');
+      ctx.font = i === 0 ? 'bold 13px monospace' : (i === 2 ? 'bold 13px monospace' : '12px monospace');
+      ctx.fillText(l, bx + 12, by + 16 + i*lh);
+    });
+  }
 
   // Off-track warning
   if (Math.abs(cam.x) > halfW) {
@@ -2042,8 +2276,30 @@ function renderTopDown(W, H) {
   }
 
   // CJ assistant overlay (matches the first-person painted path)
+  // CJ-gap optimal trajectory (top-down): ground curl + dashed air arc.
+  if (cfg.map === 'cj') {
+    const p = buildCJ();
+    ctx.strokeStyle = 'rgba(34,211,238,0.9)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    p.groundFloor.forEach((q, i) => { const [tx, ty] = w2t(q.x, q.y); i ? ctx.lineTo(tx, ty) : ctx.moveTo(tx, ty); });
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,196,0,0.85)'; ctx.lineWidth = 2; ctx.setLineDash([6,5]);
+    ctx.beginPath();
+    p.airFloor.forEach((q, i) => { const [tx, ty] = w2t(q.x, q.y); i ? ctx.lineTo(tx, ty) : ctx.moveTo(tx, ty); });
+    ctx.stroke(); ctx.setLineDash([]);
+    const [jx, jy] = w2t(p.takeoff.x, p.takeoff.y);
+    ctx.strokeStyle = '#56d364'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(jx, jy, Math.max(4, 16*TD_SCALE), 0, Math.PI*2); ctx.stroke();
+    const [ex, ey] = w2t(p.takeoff.x + 90*Math.cos(p.jumpView.yaw), p.takeoff.y + 90*Math.sin(p.jumpView.yaw));
+    drawArrow(jx, jy, ex, ey, '#ffffff', 1.5);
+    ctx.fillStyle = '#56d364'; ctx.font = 'bold 10px monospace';
+    ctx.fillText(`CJ ≥${p.jumpView.V}`, jx + 8, jy - 6);
+    const [lx, ly] = w2t(0, p.landY);
+    ctx.fillStyle = 'rgba(255,196,0,0.95)'; ctx.fillText('LAND', lx + 6, ly + 3);
+  }
+
   const cjTD = getCJ();
-  if (cjTD && cam === me && me.jumps === 0) {
+  if (cjTD && cfg.map !== 'cj' && cam === me && me.jumps === 0) {
     ctx.strokeStyle = 'rgba(34,211,238,0.9)'; ctx.lineWidth = 2;
     ctx.beginPath();
     cjTD.pts.forEach((p, i) => {
@@ -2078,16 +2334,16 @@ function renderTopDown(W, H) {
     }
     ctx.stroke();
   }
-  for (const e of [me, ...bots]) {
+  for (const e of [me, ...racers()]) {
     if (e === cam) continue;
-    if (e !== me && cfg.botsVisible === '0') continue;
+    if (e !== me && cfg.botsVisible === "0") continue;
     drawTrailTD(e, 0.45, 1.2);
   }
   drawTrailTD(cam, 0.95, 1.8);
 
-  for (const e of [me, ...bots]) {
+  for (const e of [me, ...racers()]) {
     if (e === cam) continue;
-    if (e !== me && cfg.botsVisible === '0') continue;
+    if (e !== me && cfg.botsVisible === "0") continue;
     const [ox_, oy_] = w2t(e.x, e.y);
     ctx.fillStyle = e.color;
     ctx.beginPath(); ctx.arc(ox_, oy_, 3, 0, Math.PI*2); ctx.fill();
@@ -2236,13 +2492,13 @@ function updateHUD() {
   $('peakSpeed').textContent = sessionPeak.toFixed(0) + ' ups';
 
   // Per-bot speed list (total + forward).
-  $('botSpeeds').innerHTML = bots.map(b => {
+  $("botSpeeds").innerHTML = racers().map(b => {
     const Vb = Math.hypot(b.vx, b.vy);
     return `<span style="color:${b.color}">${b.label}</span>: <b>${Vb.toFixed(0)}</b> · fwd <b>${b.vy.toFixed(0)}</b>`;
   }).join('<br>');
 
   // Per-bot last-jump gain.
-  $('botGains').innerHTML = bots.map(b => {
+  $("botGains").innerHTML = racers().map(b => {
     const g = b.lastGain;
     const sign = g >= 0 ? '+' : '';
     return `<span style="color:${b.color}">${b.label}</span>: <b>${sign}${g.toFixed(1)} ups</b>`;
@@ -2254,7 +2510,7 @@ function updateHUD() {
     if (e.finishTime != null) return `${e.finishTime.toFixed(2)}s @ ${e.finishSpeed.toFixed(0)} ups`;
     return `${e.runTime.toFixed(1)}s · ${(Math.max(0, Math.min(1, e.y/TRACK.length))*100).toFixed(1)}%`;
   }
-  const sorted = [...bots].sort((a, b) => {
+  const sorted = [...racers()].sort((a, b) => {
     if (a.finishTime != null && b.finishTime != null) return a.finishTime - b.finishTime;
     if (a.finishTime != null) return -1;
     if (b.finishTime != null) return +1;
@@ -2369,7 +2625,7 @@ function drawChart() {
   let vMax = PHYS.gSpeed * 1.2;
   for (const p of speedHist) {
     if (p.fwd.me > vMax) vMax = p.fwd.me;
-    for (const b of bots) if (p.fwd[b.label] > vMax) vMax = p.fwd[b.label];
+    for (const b of racers()) if (p.fwd[b.label] > vMax) vMax = p.fwd[b.label];
   }
   cctx.strokeStyle = '#161b22'; cctx.lineWidth = 1;
   for (let s = 200; s <= vMax; s += 200) {
@@ -2391,7 +2647,7 @@ function drawChart() {
     }
     cctx.stroke();
   }
-  bots.forEach(b => plotSeries(p => p.fwd[b.label] || 0, b.color, 1.5));
+  racers().forEach(b => plotSeries(p => p.fwd[b.label] || 0, b.color, 1.5));
   plotSeries(p => p.fwd.me, '#58a6ff', 2.0);
 }
 
