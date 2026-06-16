@@ -1521,106 +1521,141 @@ function getCJ() {
   return cjCache;
 }
 // ─── CJ-gap map: geometry + perfect-CJ replay plan ───
-// One precompute (cached per physics|fps|curl) yields BOTH the map layout
-// (start platform → void → landing platform) and the demo bot's trajectory:
-//   1. Ground approach = getCJ()'s ideal circle-jump path, re-anchored so the
-//      takeoff sits at x=0 on the platform edge, pointed straight down-track.
-//   2. Air arc = a real-physics single jump (W-only, ballistic) from that
-//      takeoff at target CJ speed, simulated until it falls back to z=0.
-// The gap is sized to that air distance minus CJ_LAND_MARGIN, so a perfect CJ
-// lands just onto the far platform and anything weaker drops into the void.
-// The frame-perfect optimal circle jump is compact (~70 ups: Q3 ground accel
-// is fast), so the start platform reaches WELL behind the optimal curl to give
-// a human room to prestrafe up to speed before tracing the final curl. The
-// player spawns near the back; the bot demos the optimal curl near the edge.
+// One precompute (cached per physics|fps) yields BOTH the map layout (start
+// platform → void → landing platform) and the demo bot's FULLY-OPTIMAL
+// trajectory, simulated with the real physics step():
+//   1. Ground: prestrafe at θ* to the ground equilibrium (the true ceiling —
+//      ~400 vq3 / ~419 cpm at 125fps, NOT the conservative 390 CJ target).
+//   2. Jump, then AIR-STRAFE at θ* (flipping side once at the apex to net
+//      forward with minimal lateral drift) — a single jump peaks at ~544 vq3 /
+//      ~557 cpm, which is what a good player actually pulls across a gap.
+// The whole trajectory is then rotated so the takeoff points straight down the
+// corridor (+y). The gap is sized to the air distance minus CJ_LAND_MARGIN, so
+// nailing this optimal jump lands just onto the far platform; a weaker/slower
+// jump drops into the void. Q3 ground accel is fast so the optimal curl is
+// compact (~70 ups), hence the long run-up platform behind the player spawn.
 const CJ_START_BACK  = 520;   // start platform extends to −this (player run-up room)
 const CJ_SPAWN_BACK  = 440;   // where the player spawns (ups behind the optimal path start)
-const CJ_LAND_MARGIN = 40;    // how far past the near edge the perfect CJ lands
+const CJ_LAND_MARGIN = 45;    // how far past the near edge the optimal CJ lands
 const CJ_LAND_LEN    = 1400;  // landing-platform depth
 let cjPlanCache = null;
 function buildCJ() {
-  const curlName = (cfg.cjAssist === 'off' || cfg.cjAssist.startsWith('classic'))
-    ? 'right' : cfg.cjAssist;   // always need a concrete greedy curl for the bot
-  const key = cfg.physics + '|' + cfg.fps + '|' + curlName;
+  const key = cfg.physics + '|' + cfg.fps;
   if (cjPlanCache && cjPlanCache.key === key) return cjPlanCache;
   const dt = 1 / cfg.fps;
-
-  // Borrow getCJ's ideal ground path (greedy curl). Temporarily force a
-  // concrete fastest curl so 'off'/'classic' still yield a usable demo path.
-  const savedAssist = cfg.cjAssist;
-  cfg.cjAssist = curlName;
-  const cj = getCJ();
-  cfg.cjAssist = savedAssist;
-
-  const gpts = cj.pts;                       // local frame: takeoff vel = +y
-  const last = gpts[gpts.length - 1];
-  const dx = -last.x;                        // takeoff → x = 0 (corridor centre)
-  const dy = -gpts[0].y;                     // spawn → y = 0
-  const takeoffY = last.y + dy;              // = path length
-  const Vto = cj.jump.V;                     // target takeoff speed (390 vq3 / 420 cpm)
-
-  // Ground frames (replay): position + view yaw tracking the wish, speed-derived
-  // velocity. View yaw = velocity tangent + curl·θ* (the W-only model getCJ paints).
-  const W = PHYS.gSpeed, Delta = PHYS.pm_accelerate * dt * W;
-  const curl = curlName.endsWith('right') ? -1 : +1;
-  const frames = [];
-  const groundFloor = [];
-  for (let i = 0; i < gpts.length; i++) {
-    const wx = gpts[i].x + dx, wy = gpts[i].y + dy, V = gpts[i].V;
-    groundFloor.push({ x: wx, y: wy, V });
-    let tang = Math.PI / 2;                   // default down-track (first frame)
-    if (i > 0) tang = Math.atan2(gpts[i].y - gpts[i-1].y, gpts[i].x - gpts[i-1].x);
-    const yaw = tang + curl * Math.acos(Math.min(1, V > 1 ? (W - Delta) / V : 1));
-    frames.push({ x: wx, y: wy, z: 0, yaw, vx: V*Math.cos(tang), vy: V*Math.sin(tang),
-                  V, onGround: true, inputs: { fm: 127, sm: 127*(-curl), jump: i === gpts.length-1 } });
+  const W = PHYS.gSpeed;
+  // Max-speed strafe angle θ* = acos((W−Δ)/V) for the active phase's accel.
+  function thetaStar(V, onGround) {
+    const accel = onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate;
+    const D = accel * dt * W;
+    return Math.acos(Math.min(1, V > 1 ? (W - D) / V : 1));
+  }
+  // World yaw placing the W+strafe wishdir at θ* on `side` (+1=D/right) of velocity.
+  function yawFor(e, side) {
+    const V = Math.hypot(e.vx, e.vy);
+    const velAng = V > 1 ? Math.atan2(e.vy, e.vx) : Math.PI / 2;
+    return velAng + side * thetaStar(V, e.onGround) - Math.atan2(-(127 * side), 127);
   }
 
-  // Air arc: real physics, single jump, W-only (ballistic). Stop when it falls
-  // back through z=0 (where the far platform's surface is).
-  const air = makeEntity(Math.PI/2);
-  air.x = 0; air.y = takeoffY; air.z = 0.01; air.vx = 0; air.vy = Vto;
-  air.vz = PHYS.jumpVelocity; air.onGround = false; air.ghost = true;
-  const airInputs = { fm: 127, sm: 0, jump: false };
-  const airFloor = [{ x: 0, y: takeoffY }];
-  let ascended = false;
+  // Simulate the whole circle jump with real physics (ghost = ignore pads).
+  const rec = [];
+  const e = makeEntity(Math.PI / 2); e.ghost = true; e.vy = 1; e.onGround = true;
+  let side = +1;                                   // curl right
+  const push = j => rec.push({ x: e.x, y: e.y, z: e.z, vx: e.vx, vy: e.vy,
+                               yaw: e.yaw, onGround: e.onGround, V: Math.hypot(e.vx, e.vy),
+                               sm: 127 * side, jump: j });
+  // Ground prestrafe → equilibrium.
+  let prevV = 0;
+  for (let f = 0; f < 4000; f++) {
+    e.yaw = yawFor(e, side);
+    step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
+    push(false);
+    const V = Math.hypot(e.vx, e.vy);
+    if (f > 80 && V - prevV < 0.02) break;          // converged to ground ceiling
+    prevV = V;
+  }
+  const takeoffIdx = rec.length;                    // first AIR frame index
+  // Jump frame (PM_CheckJump fires; no friction this frame).
+  e.yaw = yawFor(e, side);
+  step(e, { fm: 127, sm: 127 * side, jump: true }, dt);
+  push(true);
+  // Air-strafe at θ*, flip side once at the apex (vz crosses 0) to stay forward.
+  let asc = false, flipped = false;
   for (let f = 0; f < 600; f++) {
-    step(air, airInputs, dt);
-    frames.push({ x: air.x, y: air.y, z: air.z, yaw: Math.PI/2,
-                  vx: air.vx, vy: air.vy, V: Math.hypot(air.vx, air.vy),
-                  onGround: false, inputs: airInputs });
-    airFloor.push({ x: air.x, y: air.y });
-    if (air.vz < 0) ascended = true;
-    if (ascended && air.z <= 0) break;
+    if (!asc && e.vz < 0) asc = true;
+    if (asc && !flipped) { side = -side; flipped = true; }
+    e.yaw = yawFor(e, side);
+    step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
+    push(false);
+    if (asc && e.z <= 0) break;
   }
-  const landY = air.y;
-  const airDist = landY - takeoffY;
-  const landStart = takeoffY + Math.max(40, airDist - CJ_LAND_MARGIN);
+
+  // Rotate the whole trajectory so the takeoff velocity points down-track (+y),
+  // then translate the takeoff to (0,0). Physics is rotation-invariant.
+  const tv = rec[takeoffIdx], rot = Math.PI / 2 - Math.atan2(tv.vy, tv.vx);
+  const cr = Math.cos(rot), sr = Math.sin(rot), tox = tv.x, toy = tv.y;
+  for (const r of rec) {
+    const px = r.x - tox, py = r.y - toy;
+    r.X = px * cr - py * sr; r.Y = px * sr + py * cr;
+    r.VX = r.vx * cr - r.vy * sr; r.VY = r.vx * sr + r.vy * cr;
+    r.YAW = r.yaw + rot;
+  }
+
+  // Anchor: ground-run start at world y=0 → takeoff edge at takeoffY; gap sized
+  // to the air distance; landing platform begins CJ_LAND_MARGIN before touchdown.
+  const groundYmin = Math.min(...rec.slice(0, takeoffIdx).map(r => r.Y));  // most-negative (back of run)
+  const takeoffY = -groundYmin;
+  const lastR = rec[rec.length - 1];
+  const airDist = lastR.Y;                          // takeoff is at Y=0
+  const landY = takeoffY + airDist;
+  const landStart = takeoffY + Math.max(60, airDist - CJ_LAND_MARGIN);
   const landEnd = landStart + CJ_LAND_LEN;
+  const peakV = Math.max(...rec.map(r => r.V));
+  const V0 = rec[takeoffIdx - 1].V;                 // takeoff (ground equilibrium) speed
 
-  // Settle frames: stand on the far platform a beat before the replay loops.
-  for (let f = 0; f < Math.round(cfg.fps * 0.8); f++) {
-    frames.push({ x: 0, y: landY, z: 0, yaw: Math.PI/2, vx: 0, vy: 0, V: 0,
-                  onGround: true, inputs: { fm: 0, sm: 0, jump: false } });
+  // Build replay frames + paint polylines in world coords (takeoff at (0,takeoffY)).
+  const frames = [], groundFloor = [], airFloor = [];
+  rec.forEach((r, i) => {
+    const wx = r.X, wy = r.Y + takeoffY;
+    frames.push({ x: wx, y: wy, z: r.z, yaw: r.YAW, vx: r.VX, vy: r.VY, V: r.V,
+                  onGround: r.onGround, inputs: { fm: 127, sm: r.sm, jump: r.jump } });
+    (i < takeoffIdx ? groundFloor : airFloor).push({ x: wx, y: wy, V: r.V });
+  });
+  airFloor.unshift({ x: 0, y: takeoffY, V: V0 });   // connect ground→air at takeoff
+
+  // Speed milestone ticks along the path (perpendicular normals for drawing).
+  const milestones = [];
+  for (const tgt of [320, Math.round(V0 / 10) * 10, Math.round(peakV / 10) * 10]) {
+    const i = frames.findIndex(p => p.V >= tgt);
+    if (i > 0) {
+      const dx = frames[i].x - frames[i-1].x, dy = frames[i].y - frames[i-1].y;
+      const n = Math.hypot(dx, dy) || 1;
+      milestones.push({ x: frames[i].x, y: frames[i].y, nx: -dy/n, ny: dx/n, V: tgt });
+    }
   }
 
-  // Two platforms as pads (ascending centres for onPad's binary search).
+  // Settle frames so the replay rests on the far platform before looping.
+  for (let f = 0; f < Math.round(cfg.fps * 0.7); f++)
+    frames.push({ x: lastR.X, y: landY, z: 0, yaw: Math.PI/2, vx: 0, vy: 0, V: 0,
+                  onGround: true, inputs: { fm: 0, sm: 0, jump: false } });
+
+  // Pads (ascending centres for onPad's binary search) + player spawn/lead-in.
   const startC = (-CJ_START_BACK + takeoffY) / 2, startH = (takeoffY + CJ_START_BACK) / 2;
   const landC = (landStart + landEnd) / 2,        landH  = (landEnd - landStart) / 2;
-  const milestones = cj.milestones.map(m => ({ ...m, x: m.x + dx, y: m.y + dy }));
-
-  // Player spawn + a straight prestrafe lead-in painted from spawn to the
-  // optimal curl's start, so the player knows to run up to speed first.
   const spawnY = -CJ_SPAWN_BACK;
   groundFloor.unshift({ x: 0, y: spawnY, V: 0 });
 
   cjPlanCache = {
     key, frames, groundFloor, airFloor, milestones,
     takeoffY, landStart, landEnd, landY, airDist, trackLen: landEnd,
-    startC, startH, landC, landH,
-    jumpView: { yaw: cj.jump.viewYaw, label: cj.jump.viewLabel, V: Vto },
-    sideLabel: cj.sideLabel,
+    startC, startH, landC, landH, peakV, V0,
+    // Launch arrow points down-track (takeoff velocity = +y after rotation); the
+    // per-frame optimal mouse angle is shown live by the ★ gaining-zone overlay
+    // while spectating the bot (it air-strafes ~80–90° off velocity, both sides).
+    jumpView: { yaw: Math.PI/2, V: Math.round(peakV),
+                label: `launch down-track, then AIR-STRAFE both ways → peak ~${Math.round(peakV)}` },
+    sideLabel: `prestrafe to ~${Math.round(V0)} (curl right), jump at the edge`,
     spawn: { x: 0, y: spawnY },
-    curlStart: { x: groundFloor[1].x, y: groundFloor[1].y },
     takeoff: { x: 0, y: takeoffY },
   };
   return cjPlanCache;
@@ -1915,7 +1950,7 @@ function renderFirstPerson(W, H) {
     for (let s=0;s<SEG;s++){const a1=s/SEG*2*Math.PI,a2=(s+1)/SEG*2*Math.PI;const L=projectLine(J.x+RING*Math.cos(a1),J.y+RING*Math.sin(a1),Z,J.x+RING*Math.cos(a2),J.y+RING*Math.sin(a2),Z);if(L)strokeLine(L[0],L[1],'#56d364',3);}
     { const ax=Math.cos(p.jumpView.yaw),ay=Math.sin(p.jumpView.yaw);const L=projectLine(J.x,J.y,Z,J.x+80*ax,J.y+80*ay,Z);
       if(L){strokeLine(L[0],L[1],'#ffffff',2.5);const ang=Math.atan2(L[1].y-L[0].y,L[1].x-L[0].x);ctx.fillStyle='#fff';ctx.beginPath();ctx.moveTo(L[1].x,L[1].y);ctx.lineTo(L[1].x-9*Math.cos(ang-0.4),L[1].y-9*Math.sin(ang-0.4));ctx.lineTo(L[1].x-9*Math.cos(ang+0.4),L[1].y-9*Math.sin(ang+0.4));ctx.closePath();ctx.fill();} }
-    { const jl=project(J.x,J.y,30); if(jl){const sz=Math.max(11,Math.min(22,jl.focal/jl.fwd*2));ctx.fillStyle='#56d364';ctx.font=`bold ${sz}px monospace`;const t1=`JUMP ≥${p.jumpView.V}`;ctx.fillText(t1,jl.x-ctx.measureText(t1).width/2,jl.y-sz*1.15);ctx.fillStyle='#ffffff';ctx.font=`${Math.round(sz*0.72)}px monospace`;ctx.fillText(p.jumpView.label,jl.x-ctx.measureText(p.jumpView.label).width/2,jl.y);} }
+    { const jl=project(J.x,J.y,30); if(jl){const sz=Math.max(11,Math.min(22,jl.focal/jl.fwd*2));ctx.fillStyle='#56d364';ctx.font=`bold ${sz}px monospace`;const t1=`JUMP ~${Math.round(p.V0)} → peak ${p.peakV|0}`;ctx.fillText(t1,jl.x-ctx.measureText(t1).width/2,jl.y-sz*1.15);ctx.fillStyle='#ffffff';ctx.font=`${Math.round(sz*0.72)}px monospace`;ctx.fillText(p.jumpView.label,jl.x-ctx.measureText(p.jumpView.label).width/2,jl.y);} }
     { const lc=project(0, p.landY, 16); if(lc){ctx.fillStyle='rgba(255,196,0,0.95)';ctx.font='bold 13px monospace';const t='◎ LAND';ctx.fillText(t,lc.x-ctx.measureText(t).width/2,lc.y);} }
   }
 
@@ -2125,9 +2160,9 @@ function renderFirstPerson(W, H) {
     const p = buildCJ();
     const lines = [
       `CIRCLE-JUMP · ${PHYS.name}`,
-      `Takeoff @ ≥${p.jumpView.V} ups · gap ${Math.round(p.landStart - p.takeoffY)} ups`,
-      `Aim at jump:  ${p.jumpView.label}`,
-      `Approach run:  ${p.sideLabel}`,
+      `Optimal peak ~${p.peakV|0} ups (takeoff ~${Math.round(p.V0)}) · gap ${Math.round(p.landStart - p.takeoffY)} ups`,
+      `Jump: ${p.jumpView.label}`,
+      `Approach: ${p.sideLabel}`,
     ];
     ctx.font = 'bold 13px monospace';
     let wMax = 0; for (const l of lines) wMax = Math.max(wMax, ctx.measureText(l).width);
@@ -2293,8 +2328,8 @@ function renderTopDown(W, H) {
     const [ex, ey] = w2t(p.takeoff.x + 90*Math.cos(p.jumpView.yaw), p.takeoff.y + 90*Math.sin(p.jumpView.yaw));
     drawArrow(jx, jy, ex, ey, '#ffffff', 1.5);
     ctx.fillStyle = '#56d364'; ctx.font = 'bold 10px monospace';
-    ctx.fillText(`CJ ≥${p.jumpView.V}`, jx + 8, jy - 6);
-    const [lx, ly] = w2t(0, p.landY);
+    ctx.fillText(`CJ ~${Math.round(p.V0)}→${p.peakV|0}`, jx + 8, jy - 6);
+    const [lx, ly] = w2t(p.takeoff.x, p.landY);
     ctx.fillStyle = 'rgba(255,196,0,0.95)'; ctx.fillText('LAND', lx + 6, ly + 3);
   }
 
