@@ -1634,8 +1634,9 @@ function buildCJ() {
     }
   }
 
-  // Settle frames so the replay rests on the far platform before looping.
-  for (let f = 0; f < Math.round(cfg.fps * 0.7); f++)
+  // Brief settle so the replay rests on the far platform before looping (kept
+  // short so the jump — and its speed peak — comes back around quickly).
+  for (let f = 0; f < Math.round(cfg.fps * 0.25); f++)
     frames.push({ x: lastR.X, y: landY, z: 0, yaw: Math.PI/2, vx: 0, vy: 0, V: 0,
                   onGround: true, inputs: { fm: 0, sm: 0, jump: false } });
 
@@ -1679,7 +1680,8 @@ function applyMap() {
 function cjBotStep(dt) {
   const plan = buildCJ();
   const f = plan.frames;
-  if (cjBot._frame >= f.length) { cjBot._frame = 0; cjBot.trail.length = 0; }  // loop: drop the old trail so the teleport-back isn't drawn
+  if (cjBot._frame >= f.length) { cjBot._frame = 0; cjBot.trail.length = 0; cjBot._peak = 0; }  // loop: drop trail + reset per-jump peak
+  cjBot._peak = Math.max(cjBot._peak || 0, Math.hypot(cjBot.vx, cjBot.vy));
   const fr = f[cjBot._frame++];
   cjBot.x = fr.x; cjBot.y = fr.y; cjBot.z = fr.z; cjBot.yaw = fr.yaw;
   cjBot.vx = fr.vx; cjBot.vy = fr.vy; cjBot.onGround = fr.onGround;
@@ -2164,6 +2166,8 @@ function renderFirstPerson(W, H) {
       `Jump: ${p.jumpView.label}`,
       `Approach: ${p.sideLabel}`,
     ];
+    if (cam === cjBot) lines.splice(1, 0,
+      `BOT now ${Math.hypot(cjBot.vx,cjBot.vy).toFixed(0)} · this-jump peak ${Math.round(cjBot._peak||0)} ups`);
     ctx.font = 'bold 13px monospace';
     let wMax = 0; for (const l of lines) wMax = Math.max(wMax, ctx.measureText(l).width);
     const bx = W/2 - wMax/2 - 12, by = 14, lh = 18, bh = lines.length*lh + 12;
