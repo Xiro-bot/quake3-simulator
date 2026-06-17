@@ -1681,7 +1681,7 @@ function buildCJ() {
   // takeoff in +y; if the platform stopped at the takeoff, that part of the curl
   // (and the bot spawn) would float over the void. Cover the whole curl.
   const groundMaxW = Math.max(...Object.values(plans).flatMap(p => p.groundFloor.map(q => q.y)));
-  const edge = groundMaxW + 30;
+  const edge = groundMaxW + 2;   // platform ends right at the frontmost ground point → bots jump AT the edge
   // Gap (void) sized to the REALISTIC jump's landing; the max bot overshoots deeper.
   const landStart = Math.max(edge + 120, takeoffY + sims.real.airDist - CJ_LAND_MARGIN);
   const maxLandY = Math.max(...Object.values(plans).map(p => p.landY));
