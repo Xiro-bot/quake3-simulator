@@ -1711,13 +1711,15 @@ function cjBotStep(bot) {
   const fr = f[bot._frame++];
   bot.x = fr.x; bot.y = fr.y; bot.z = fr.z;
   bot.vx = fr.vx; bot.vy = fr.vy; bot.onGround = fr.onGround;
-  // Spectate camera. 'learn' (default): FOLLOW the bot's real view through the
-  // ground circle (~95° sweep — the mouse motion you must copy), then face ahead
-  // (+y, toward the landing) in the air so the 80–90° air-strafe flips don't whip
-  // the view. 'ahead': always down-track. Toggle with C. The ★ overlay always
-  // marks the optimal aim regardless of where the camera points.
+  // Spectate camera. 'learn' (default): face the DIRECTION OF TRAVEL — pans
+  // smoothly through the ground curl, faces straight down the jump (+y) at
+  // takeoff, stays ~forward in the air (velocity barely drifts). This reads
+  // naturally; the bot's actual aim leads velocity by ~θ*+45° (looks ~sideways)
+  // so we do NOT point the camera there — the ★ gaining-zone overlay marks that
+  // optimal aim instead. 'ahead': locked down-track. Toggle with C.
   bot.aimYaw = fr.yaw;
-  bot.yaw = (cfg.cjCam === 'ahead' || !fr.onGround) ? Math.PI / 2 : fr.yaw;
+  const sp = Math.hypot(fr.vx, fr.vy);
+  bot.yaw = (cfg.cjCam === 'ahead' || sp < 5) ? Math.PI / 2 : Math.atan2(fr.vy, fr.vx);
   bot.currentInputs = fr.inputs;
   bot._phase = fr.onGround ? (fr.V < 5 && bot._frame > 2 ? 'landed' : 'approach') : 'air';
 }
