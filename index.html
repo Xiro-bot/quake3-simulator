@@ -1574,7 +1574,13 @@ function simCJ(airSlackDeg) {
   const yawFor = (e, side, extra) => {
     const V = Math.hypot(e.vx, e.vy);
     const velAng = V > 1 ? Math.atan2(e.vy, e.vx) : Math.PI / 2;
-    return velAng + side * (thetaStar(V, e.onGround) + extra) - Math.atan2(-(127 * side), 127);
+    // Natural strafe view. With W+strafe, the wishdir sits 45° to the strafe side
+    // of the VIEW; we want that wishdir at θ*(+slack) off velocity to gain. So the
+    // VIEW = velocity ± (45° − θ* − slack) — only ~8° off velocity at speed, i.e.
+    // you look roughly where you're going (and D pairs with a RIGHT curl, A with
+    // LEFT — the real strafe-jump muscle memory). The old formula used θ*+45°
+    // (~82° off) which demanded an impossible "look 90° sideways" input.
+    return velAng + side * (Math.PI / 4 - thetaStar(V, e.onGround) - extra);
   };
   const rec = [];
   const e = makeEntity(Math.PI / 2); e.ghost = true; e.noClamp = true; e.vy = 1; e.onGround = true;
