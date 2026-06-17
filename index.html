@@ -1588,7 +1588,7 @@ function simCJ(airSlackDeg) {
   };
   const rec = [];
   const e = makeEntity(Math.PI / 2); e.ghost = true; e.noClamp = true; e.vy = 1; e.onGround = true;
-  let side = +1;
+  let side = -1;   // −1 = W+A, curl LEFT-to-right (the mirror of the +1/W+D curl)
   const push = j => rec.push({ z: e.z, vx: e.vx, vy: e.vy, yaw: e.yaw,
                                onGround: e.onGround, V: Math.hypot(e.vx, e.vy), sm: 127 * side, jump: j,
                                _x: e.x, _y: e.y });
@@ -2222,7 +2222,7 @@ function renderFirstPerson(W, H) {
       `CIRCLE-JUMP · ${PHYS.name} · gap ${p.gap} ups`,
       `realistic: takeoff ~${Math.round(p.real.V0)} → peak ~${p.real.peakV|0} ups`,
       `frame-perfect: takeoff ~${Math.round(p.max.V0)} → peak ~${p.max.peakV|0} ups`,
-      `hold W+D, SWEEP THE MOUSE right through the curve (keys alone cap ~320)`,
+      `hold W+A, SWEEP THE MOUSE left through the curve (keys alone cap ~320)`,
     ];
     if (cam.isCJ) lines.splice(1, 0,
       `${cam.label} now ${Math.hypot(cam.vx,cam.vy).toFixed(0)} · this-run peak ${Math.round(cam._peak||0)} ups`);
