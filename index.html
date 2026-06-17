@@ -1643,23 +1643,29 @@ function buildCJ() {
   const key = cfg.physics + '|' + cfg.fps;
   if (cjPlanCache && cjPlanCache.key === key) return cjPlanCache;
   const sims = {}; for (const k in CJ_SKILLS) sims[k] = simCJ(CJ_SKILLS[k].airSlackDeg);
-  // Shared takeoff edge = far enough back that the longest ground run fits.
+  // takeoffY anchors the lowest ground point at world y≈0 (room behind for spawn).
   const takeoffY = Math.max(...Object.values(sims).map(s => -s.groundYmin));
   const real = anchorCJ(sims.real, 'real', takeoffY);
   const max  = anchorCJ(sims.max,  'max',  takeoffY);
-  // Gap sized to the REALISTIC (achievable) jump; max bot overshoots deeper.
-  const landStart = takeoffY + Math.max(60, sims.real.airDist - CJ_LAND_MARGIN);
-  const landEnd = landStart + CJ_LAND_LEN;
-  const startC = (-CJ_START_BACK + takeoffY) / 2, startH = (takeoffY + CJ_START_BACK) / 2;
-  const landC = (landStart + landEnd) / 2,        landH  = (landEnd - landStart) / 2;
+  // The start-platform FAR EDGE = the frontmost point either ground run reaches,
+  // NOT the takeoff. CPM's tight curl spirals so the run can swing ~20–50 ups
+  // PAST the takeoff in +y; if the platform stopped at the takeoff, that part of
+  // the curl (and the bot's spawn) would float over the void. Cover the whole curl.
+  const groundMaxW = Math.max(...real.groundFloor.map(p => p.y), ...max.groundFloor.map(p => p.y));
+  const edge = groundMaxW + 30;
+  // Gap (void) sized to the REALISTIC jump's landing; max bot overshoots deeper.
+  const landStart = Math.max(edge + 120, takeoffY + sims.real.airDist - CJ_LAND_MARGIN);
+  const landEnd = Math.max(max.landY, landStart) + CJ_LAND_LEN;
+  const startC = (-CJ_START_BACK + edge) / 2, startH = (edge + CJ_START_BACK) / 2;
+  const landC = (landStart + landEnd) / 2,    landH  = (landEnd - landStart) / 2;
   const spawnY = -CJ_SPAWN_BACK;
   real.groundFloor.unshift({ x: real.laneX, y: spawnY, V: 0 });   // prestrafe lead-in per lane
   max.groundFloor.unshift({ x: max.laneX, y: spawnY, V: 0 });
   cjPlanCache = {
     key, real, max, plans: { real, max },
-    takeoffY, landStart, landEnd, landY: real.landY, trackLen: landEnd,
+    takeoffY, edge, landStart, landEnd, landY: real.landY, trackLen: landEnd,
     startC, startH, landC, landH,
-    gap: Math.round(landStart - takeoffY),
+    gap: Math.round(landStart - edge),
     spawn: { x: 0, y: spawnY }, takeoff: { x: 0, y: takeoffY },
   };
   return cjPlanCache;
