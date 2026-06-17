@@ -611,9 +611,8 @@ bots.forEach(b => { b.ghost = true; });  // see makeEntity: bots race the virtua
 // Spectate either (V) to see its approach curl, gap clearance and speed. Each
 // has its trajectory painted on the floor in its own colour.
 const CJ_SKILLS = {
-  real:  { label: 'realistic',     color: '#22d3ee', lane: -90, airSlackDeg: 28 },
-  max:   { label: 'frame-perfect', color: '#56d364', lane:   0, airSlackDeg: 0 },
-  chain: { label: 'CJ→strafe', color: '#f0883e', lane: +90, airSlackDeg: 0, chain: 600 },
+  real: { label: 'realistic',     color: '#22d3ee', lane: -55, airSlackDeg: 28 },
+  max:  { label: 'frame-perfect', color: '#56d364', lane: +55, airSlackDeg: 0 },
 };
 function makeCJBot(key) {
   const b = makeEntity(Math.PI/2);
@@ -623,10 +622,9 @@ function makeCJBot(key) {
   b._frame = 0; b._peak = 0; b._phase = 'approach';
   return b;
 }
-const cjBotReal  = makeCJBot('real');
-const cjBotMax   = makeCJBot('max');
-const cjBotChain = makeCJBot('chain');
-const cjBots = [cjBotReal, cjBotMax, cjBotChain];
+const cjBotReal = makeCJBot('real');
+const cjBotMax  = makeCJBot('max');
+const cjBots = [cjBotReal, cjBotMax];
 
 // Racers actually present on the active map (strafe = the 8 ghosts, CJ = the
 // two demo bots). Used by the sim loop and every render/trail iteration so the
@@ -1571,7 +1569,7 @@ const CJ_LAND_LEN    = 1400;  // landing-platform depth
 // Simulate one circle jump (ground→equilibrium, jump, air-strafe with the given
 // air-aim slack) and return the trajectory ROTATED so takeoff velocity = +y and
 // TRANSLATED so the takeoff sits at (0,0). Pure data; anchored later.
-function simCJ(airSlackDeg, chainTo) {
+function simCJ(airSlackDeg) {
   const dt = 1 / cfg.fps, W = PHYS.gSpeed, slack = airSlackDeg * Math.PI / 180;
   const thetaStar = (V, onGround) => {
     const D = (onGround ? PHYS.pm_accelerate : PHYS.pm_airaccelerate) * dt * W;
@@ -1614,36 +1612,16 @@ function simCJ(airSlackDeg, chainTo) {
   e.yaw = yawFor(e, side, 0);
   step(e, { fm: 127, sm: 127 * side, jump: true }, dt);
   push(true);
-  if (!chainTo) {
-    // Single circle jump: air-strafe, flip side once at the apex (nets forward,
-    // minimal lateral drift), land.
-    let asc = false, flipped = false;
-    for (let f = 0; f < 600; f++) {
-      if (!asc && e.vz < 0) asc = true;
-      if (asc && !flipped) { side = -side; flipped = true; }
-      e.yaw = yawFor(e, side, slack);
-      step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
-      push(false);
-      if (asc && e.z <= 0) break;
-    }
-  } else {
-    // CJ → strafe-jump chain: keep bunny-hopping (one strafe side per hop, flip
-    // on each landing, auto-hop) until speed hits chainTo. Demonstrates how you
-    // climb PAST a single CJ's ~542 ceiling into strafe-jumping — injx puts ~600
-    // at the boundary between the two. (A single jump physically can't reach 600.)
-    for (let f = 0; f < 4000; f++) {
-      if (e.onGround) {
-        if (Math.hypot(e.vx, e.vy) >= chainTo) break;
-        side = -side;                                 // alternate strafe key each hop
-        e.yaw = yawFor(e, side, slack);
-        step(e, { fm: 127, sm: 127 * side, jump: true }, dt);   // auto-hop
-        push(true);
-      } else {
-        e.yaw = yawFor(e, side, slack);
-        step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
-        push(false);
-      }
-    }
+  // Single circle jump: air-strafe, flip side once at the apex (nets forward,
+  // minimal lateral drift), land.
+  let asc = false, flipped = false;
+  for (let f = 0; f < 600; f++) {
+    if (!asc && e.vz < 0) asc = true;
+    if (asc && !flipped) { side = -side; flipped = true; }
+    e.yaw = yawFor(e, side, slack);
+    step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
+    push(false);
+    if (asc && e.z <= 0) break;
   }
   const tv = rec[takeoffIdx], rot = Math.PI / 2 - Math.atan2(tv.vy, tv.vx);
   const cr = Math.cos(rot), sr = Math.sin(rot), tox = tv._x, toy = tv._y;
@@ -1692,22 +1670,20 @@ function anchorCJ(sim, key, takeoffY) {
 function buildCJ() {
   const key = cfg.physics + '|' + cfg.fps;
   if (cjPlanCache && cjPlanCache.key === key) return cjPlanCache;
-  const sims = {}; for (const k in CJ_SKILLS) sims[k] = simCJ(CJ_SKILLS[k].airSlackDeg, CJ_SKILLS[k].chain);
+  const sims = {}; for (const k in CJ_SKILLS) sims[k] = simCJ(CJ_SKILLS[k].airSlackDeg);
   // takeoffY anchors the lowest ground point at world y≈0 (room behind for spawn).
   const takeoffY = Math.max(...Object.values(sims).map(s => -s.groundYmin));
   const plans = {};
   for (const k in CJ_SKILLS) plans[k] = anchorCJ(sims[k], k, takeoffY);
-  const { real, max, chain } = plans;
+  const { real, max } = plans;
   // The start-platform FAR EDGE = the frontmost ground point any run reaches, NOT
   // the takeoff. CPM's tight curl spirals so the run swings ~20–50 ups PAST the
   // takeoff in +y; if the platform stopped at the takeoff, that part of the curl
   // (and the bot spawn) would float over the void. Cover the whole curl.
   const groundMaxW = Math.max(...Object.values(plans).flatMap(p => p.groundFloor.map(q => q.y)));
   const edge = groundMaxW + 30;
-  // Gap (void) sized to the REALISTIC jump's landing; max/chain overshoot deeper.
+  // Gap (void) sized to the REALISTIC jump's landing; the max bot overshoots deeper.
   const landStart = Math.max(edge + 120, takeoffY + sims.real.airDist - CJ_LAND_MARGIN);
-  // Landing platform long enough to hold the furthest bot (the chain bot bunny-
-  // hops far down it on its way to ~600) plus the player's landing.
   const maxLandY = Math.max(...Object.values(plans).map(p => p.landY));
   const landEnd = Math.max(landStart + CJ_LAND_LEN, maxLandY + 200);
   const startC = (-CJ_START_BACK + edge) / 2, startH = (edge + CJ_START_BACK) / 2;
@@ -1715,7 +1691,7 @@ function buildCJ() {
   const spawnY = -CJ_SPAWN_BACK;
   for (const k in plans) plans[k].groundFloor.unshift({ x: plans[k].laneX, y: spawnY, V: 0 });  // lead-in per lane
   cjPlanCache = {
-    key, real, max, chain, plans,
+    key, real, max, plans,
     takeoffY, edge, landStart, landEnd, landY: real.landY, trackLen: landEnd,
     startC, startH, landC, landH,
     gap: Math.round(landStart - edge),
@@ -2033,7 +2009,7 @@ function renderFirstPerson(W, H) {
     const both = buildCJ();
     // Paint all three; dim any plan not being spectated, and draw the spectated
     // one last so it's on top.
-    const order = ['real', 'max', 'chain'].sort((a, b) => (cam.cjKey === a ? 1 : 0) - (cam.cjKey === b ? 1 : 0));
+    const order = ['real', 'max'].sort((a, b) => (cam.cjKey === a ? 1 : 0) - (cam.cjKey === b ? 1 : 0));
     for (const k of order) paintPlan(both[k], cam.isCJ && cam.cjKey !== k);
     // Shared down-track launch arrow at the takeoff line.
     { const L = projectLine(0, both.takeoffY, Z, 0, both.takeoffY + 80, Z);
@@ -2246,7 +2222,6 @@ function renderFirstPerson(W, H) {
       `CIRCLE-JUMP · ${PHYS.name} · gap ${p.gap} ups`,
       `realistic: takeoff ~${Math.round(p.real.V0)} → peak ~${p.real.peakV|0} ups`,
       `frame-perfect: takeoff ~${Math.round(p.max.V0)} → peak ~${p.max.peakV|0} ups`,
-      `CJ→strafe chain: keeps hopping to ~${p.chain.peakV|0} ups (past one CJ's limit)`,
       `hold W+D, SWEEP THE MOUSE right through the curve (keys alone cap ~320)`,
     ];
     if (cam.isCJ) lines.splice(1, 0,
@@ -2261,7 +2236,6 @@ function renderFirstPerson(W, H) {
       if (i === 0) color = '#cdd9e5';
       else if (l.startsWith('realistic') || (cam === cjBotReal && i === 1)) color = CJ_SKILLS.real.color;
       else if (l.startsWith('frame-perfect') || (cam === cjBotMax && i === 1)) color = CJ_SKILLS.max.color;
-      else if (l.startsWith('CJ→strafe') || (cam === cjBotChain && i === 1)) color = CJ_SKILLS.chain.color;
       ctx.fillStyle = color;
       ctx.font = (i === 0 || (cam.isCJ && i === 1)) ? 'bold 13px monospace' : '12px monospace';
       ctx.fillText(l, bx + 12, by + 16 + i*lh);
@@ -2421,7 +2395,7 @@ function renderTopDown(W, H) {
       const [lx, ly] = w2t(p.takeoff.x, p.landY);
       ctx.fillText('◎', lx - 3, ly + 4);
     };
-    for (const k of ['real', 'max', 'chain']) drawTD(both[k]);
+    for (const k of ['real', 'max']) drawTD(both[k]);
   }
 
   const cjTD = getCJ();
