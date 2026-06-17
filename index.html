@@ -1199,7 +1199,9 @@ function frame() {
     };
     const jumpsBefore = me.jumps;
     step(me, inputs, simDt);
-    if (me.jumps > jumpsBefore) playJumpGrunt();  // actual jump, not walking off an edge
+    if (me.jumps > jumpsBefore) { playJumpGrunt(); me._jumpPeak = Math.hypot(me.vx, me.vy); }  // takeoff: reset jump-peak
+    me._jumpPeak = Math.max(me._jumpPeak || 0, Math.hypot(me.vx, me.vy));  // top speed reached since takeoff (persists after landing → compare to bots)
+    if (me.justLanded && cfg.map === 'cj' && me.jumps > 0) { me._landY = me.y; me._landX = me.x; }  // where the player landed
     // Bots wait at the spawn until you press jump. The instant you do, reset
     // your race timer to 0 so all three start from the same t=0.
     if (!raceStarted && me.jumps > 0) {
@@ -2014,6 +2016,20 @@ function renderFirstPerson(W, H) {
     // Shared down-track launch arrow at the takeoff line.
     { const L = projectLine(0, both.takeoffY, Z, 0, both.takeoffY + 80, Z);
       if (L) { strokeLine(L[0], L[1], '#ffffff', 2); } }
+    // Your landing spot + how far past each bot's landing (◎). Persists after you land.
+    if (cam === me && me._landY != null) {
+      const J = { x: me._landX, y: me._landY }, RING = 14, SEG = 20, col = me.color;
+      for (let s=0;s<SEG;s++){const a1=s/SEG*2*Math.PI,a2=(s+1)/SEG*2*Math.PI;const L=projectLine(J.x+RING*Math.cos(a1),J.y+RING*Math.sin(a1),Z,J.x+RING*Math.cos(a2),J.y+RING*Math.sin(a2),Z);if(L)strokeLine(L[0],L[1],col,2.5);}
+      const dG = Math.round(me._landY - both.max.landY), dR = Math.round(me._landY - both.real.landY);
+      const lp = project(J.x, J.y, 18);
+      if (lp) {
+        ctx.font = 'bold 12px monospace';
+        const t1 = 'YOU LAND', t2 = `${dG>=0?'+':''}${dG} vs green · ${dR>=0?'+':''}${dR} vs blue`;
+        ctx.fillStyle = col;            ctx.fillText(t1, lp.x - ctx.measureText(t1).width/2, lp.y - 14);
+        ctx.fillStyle = dG >= 0 ? CJ_SKILLS.max.color : '#cdd9e5';
+        ctx.fillText(t2, lp.x - ctx.measureText(t2).width/2, lp.y);
+      }
+    }
   }
 
   const cj = getCJ();
@@ -2192,6 +2208,22 @@ function renderFirstPerson(W, H) {
   ctx.fillText(vAbove, cx - vam.width/2, cy - 24);
   ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace';
   ctx.fillText('ups', cx - 9, cy - 42);
+
+  // ── Your TOP speed this jump (above current speed) + the two bot peaks to beat.
+  // Persists after landing so you can compare once the jump is done. ──
+  if (cam === me && cfg.map === 'cj' && me._jumpPeak) {
+    const cjp = buildCJ(), jp = Math.round(me._jumpPeak), gP = cjp.max.peakV|0, bP = cjp.real.peakV|0;
+    ctx.font = 'bold 20px monospace';
+    const t = `TOP ${jp}`;
+    ctx.fillStyle = jp >= gP ? CJ_SKILLS.max.color : (jp >= bP ? '#f0c000' : '#cdd9e5');
+    ctx.fillText(t, cx - ctx.measureText(t).width/2, cy - 58);
+    ctx.font = 'bold 11px monospace';
+    const segG = `max ${gP}`, segB = ` · real ${bP}`;
+    const wG = ctx.measureText(segG).width, wB = ctx.measureText(segB).width;
+    const xx = cx - (wG + wB) / 2;
+    ctx.fillStyle = CJ_SKILLS.max.color;  ctx.fillText(segG, xx, cy - 76);
+    ctx.fillStyle = CJ_SKILLS.real.color; ctx.fillText(segB, xx + wG, cy - 76);
+  }
 
   // HUD: big speed bottom-left (kept)
   ctx.fillStyle = '#58a6ff'; ctx.font = 'bold 44px monospace';
@@ -2727,6 +2759,9 @@ function drawChart() {
     if (p.fwd.me > vMax) vMax = p.fwd.me;
     for (const b of racers()) if (p.fwd[b.label] > vMax) vMax = p.fwd[b.label];
   }
+  // CJ map: make sure both bot peaks fit on the chart so their reference lines show.
+  const cjp = cfg.map === 'cj' ? buildCJ() : null;
+  if (cjp) vMax = Math.max(vMax, cjp.max.peakV * 1.05);
   cctx.strokeStyle = '#161b22'; cctx.lineWidth = 1;
   for (let s = 200; s <= vMax; s += 200) {
     const y = H - (s/vMax)*(H-10);
@@ -2737,6 +2772,17 @@ function drawChart() {
   cctx.strokeStyle = '#d29922'; cctx.setLineDash([3,3]);
   cctx.beginPath(); cctx.moveTo(0,gy); cctx.lineTo(W,gy); cctx.stroke();
   cctx.setLineDash([]);
+  // CJ map: horizontal peak-speed lines for each bot — the targets to beat.
+  if (cjp) {
+    for (const k of ['max', 'real']) {
+      const pv = cjp[k].peakV, y = H - (pv/vMax)*(H-10);
+      cctx.strokeStyle = cjp[k].color; cctx.lineWidth = 1.5; cctx.setLineDash([7,4]);
+      cctx.beginPath(); cctx.moveTo(0,y); cctx.lineTo(W,y); cctx.stroke();
+      cctx.setLineDash([]);
+      cctx.fillStyle = cjp[k].color; cctx.font = 'bold 10px monospace';
+      const lbl = `${k} ${pv|0}`; cctx.fillText(lbl, W - cctx.measureText(lbl).width - 3, y - 2);
+    }
+  }
   function plotSeries(getter, color, width) {
     cctx.strokeStyle = color; cctx.lineWidth = width;
     cctx.beginPath();
