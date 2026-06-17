@@ -539,6 +539,8 @@ const cfg = {
   physics: 'vq3',          // 'vq3' or 'cpm' — selects PHYSICS profile
   cjAssist: 'right',       // circle-jump assistant: 'right' | 'left' | 'off'
   map: 'strafe',           // 'strafe' (pad track) | 'cj' (single-gap CJ trainer)
+  cjCam: 'learn',          // CJ spectate camera: 'learn' (follow the bot's view through the
+                           // ground circle, face ahead in air) | 'ahead' (always down-track)
 };
 
 // ───── State ─────
@@ -818,9 +820,15 @@ function step(e, inputs, dt) {
   // Corridor walls are solid — clamp the player's CENTER to (halfW - radius)
   // so the player's body edge stops at the wall surface, not the centre.
   // Q3 slide: lose normal-component of vx, keep vy.
+  // noClamp: the CJ trajectory pre-sim runs in raw coords (the curl wanders far
+  // in x before being rotated/lane-anchored), so it must NOT hit the corridor
+  // walls — clamping there would zero vx mid-sim and corrupt the speed. Real
+  // play + the lane-anchored replay positions stay in the corridor normally.
   const wallLimit = TRACK.width / 2 - PLAYER_RADIUS;
-  if (e.x < -wallLimit) { e.x = -wallLimit; if (e.vx < 0) e.vx = 0; }
-  if (e.x >  wallLimit) { e.x =  wallLimit; if (e.vx > 0) e.vx = 0; }
+  if (!e.noClamp) {
+    if (e.x < -wallLimit) { e.x = -wallLimit; if (e.vx < 0) e.vx = 0; }
+    if (e.x >  wallLimit) { e.x =  wallLimit; if (e.vx > 0) e.vx = 0; }
+  }
   // Pad vertical faces — solid for any entity whose z is in the slab range.
   // Without this you fly horizontally through the next pad's front face after
   // a short jump. Binary-search the nearest pad and push y back to whichever
@@ -999,6 +1007,7 @@ document.addEventListener('keydown', e => {
   if (k === ' ') { keys.space = true; updateKeyUI(); e.preventDefault(); return; }
   if (k === 'r') { resetToStart(); e.preventDefault(); return; }
   if (k === 'v') { cycleCam(); e.preventDefault(); return; }
+  if (k === 'c') { cfg.cjCam = cfg.cjCam === 'learn' ? 'ahead' : 'learn'; e.preventDefault(); return; }  // CJ spectate camera mode
   if (k in keys) { keys[k] = true; updateKeyUI(); e.preventDefault(); }
 });
 document.addEventListener('keyup', e => {
@@ -1568,19 +1577,26 @@ function simCJ(airSlackDeg) {
     return velAng + side * (thetaStar(V, e.onGround) + extra) - Math.atan2(-(127 * side), 127);
   };
   const rec = [];
-  const e = makeEntity(Math.PI / 2); e.ghost = true; e.vy = 1; e.onGround = true;
+  const e = makeEntity(Math.PI / 2); e.ghost = true; e.noClamp = true; e.vy = 1; e.onGround = true;
   let side = +1;
   const push = j => rec.push({ z: e.z, vx: e.vx, vy: e.vy, yaw: e.yaw,
                                onGround: e.onGround, V: Math.hypot(e.vx, e.vy), sm: 127 * side, jump: j,
                                _x: e.x, _y: e.y });
-  let prevV = 0;
-  for (let f = 0; f < 4000; f++) {                  // ground → equilibrium (perfect θ*)
+  // Ground prestrafe = a real circle jump: run straight (θ*=0 below ~294), then
+  // curl. Stop once the VELOCITY has turned ~95° (a quarter-circle CJ). By then
+  // V≈398 vq3 / 415 cpm — within a few ups of the full ground ceiling, so the
+  // extra 100°+ of spiral the convergence test used to add was pointless AND
+  // made the bot's view sweep look unrealistic. ~95° is the real mouse motion.
+  let cumTurn = 0, prevVel = Math.atan2(e.vy, e.vx);
+  const TURN_CAP = 95 * Math.PI / 180;
+  for (let f = 0; f < 4000; f++) {
     e.yaw = yawFor(e, side, 0);
     step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
     push(false);
-    const V = Math.hypot(e.vx, e.vy);
-    if (f > 80 && V - prevV < 0.02) break;
-    prevV = V;
+    const vel = Math.atan2(e.vy, e.vx);
+    let d = vel - prevVel; while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI;
+    cumTurn += Math.abs(d); prevVel = vel;
+    if (cumTurn >= TURN_CAP) break;
   }
   const takeoffIdx = rec.length;
   e.yaw = yawFor(e, side, 0);
@@ -1695,13 +1711,13 @@ function cjBotStep(bot) {
   const fr = f[bot._frame++];
   bot.x = fr.x; bot.y = fr.y; bot.z = fr.z;
   bot.vx = fr.vx; bot.vy = fr.vy; bot.onGround = fr.onGround;
-  // Spectator camera looks straight down-track (+y) toward the landing the whole
-  // time (see where the jump lands) — NOT the bot's real aim, which sweeps
-  // 80–90° side to side (air-strafe) + ~150° on the ground curl and would whip
-  // the view. The optimal mouse aim, incl. the apex side-flip, is shown by the
-  // ★ gaining-zone overlay offset from this fixed view. fr.aimYaw keeps the real aim.
+  // Spectate camera. 'learn' (default): FOLLOW the bot's real view through the
+  // ground circle (~95° sweep — the mouse motion you must copy), then face ahead
+  // (+y, toward the landing) in the air so the 80–90° air-strafe flips don't whip
+  // the view. 'ahead': always down-track. Toggle with C. The ★ overlay always
+  // marks the optimal aim regardless of where the camera points.
   bot.aimYaw = fr.yaw;
-  bot.yaw = Math.PI / 2;
+  bot.yaw = (cfg.cjCam === 'ahead' || !fr.onGround) ? Math.PI / 2 : fr.yaw;
   bot.currentInputs = fr.inputs;
   bot._phase = fr.onGround ? (fr.V < 5 && bot._frame > 2 ? 'landed' : 'approach') : 'air';
 }
@@ -2179,7 +2195,7 @@ function renderFirstPerson(W, H) {
   ctx.fillStyle = cam.color; ctx.font = 'bold 11px monospace';
   let camTag;
   if (cam === me) camTag = `◉ PLAYING (you) — V to ${cfg.map === 'cj' ? 'spectate the CJ bots' : 'spectate bots'}`;
-  else if (cam.isCJ) camTag = `◉ SPECTATING ${cam.label} (${cam.cjKey === 'max' ? 'frame-perfect' : 'realistic'}) — ${cam._phase.toUpperCase()} — V cycles view`;
+  else if (cam.isCJ) camTag = `◉ SPECTATING ${cam.label} (${cam.cjKey === 'max' ? 'frame-perfect' : 'realistic'}) — ${cam._phase.toUpperCase()} — V cycles · C cam:${cfg.cjCam}`;
   else camTag = `◉ SPECTATING ${cam.label.toUpperCase()} (${cam.strategy === 'alt1' ? 'switch every jump' : 'switch every 2 jumps'}) — V cycles view`;
   ctx.fillText(camTag, 14, 16);
 
@@ -2190,7 +2206,8 @@ function renderFirstPerson(W, H) {
       `CIRCLE-JUMP · ${PHYS.name} · gap ${p.gap} ups`,
       `realistic: takeoff ~${Math.round(p.real.V0)} → peak ~${p.real.peakV|0} ups`,
       `frame-perfect: takeoff ~${Math.round(p.max.V0)} → peak ~${p.max.peakV|0} ups`,
-      `air-strafe BOTH ways across the gap (★ shows the aim)`,
+      `hold W+D, SWEEP THE MOUSE right through the curve (keys alone cap ~320)`,
+      `then air-strafe both ways across the gap (★ = aim)`,
     ];
     if (cam.isCJ) lines.splice(1, 0,
       `${cam.label} now ${Math.hypot(cam.vx,cam.vy).toFixed(0)} · this-jump peak ${Math.round(cam._peak||0)} ups`);
