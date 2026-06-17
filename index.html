@@ -1690,8 +1690,8 @@ function buildCJ() {
   const landEnd = Math.max(landStart + CJ_LAND_LEN, maxLandY + 200);
   const startC = (-CJ_START_BACK + edge) / 2, startH = (edge + CJ_START_BACK) / 2;
   const landC = (landStart + landEnd) / 2,    landH  = (landEnd - landStart) / 2;
-  const spawnY = -CJ_SPAWN_BACK;
-  for (const k in plans) plans[k].groundFloor.unshift({ x: plans[k].laneX, y: spawnY, V: 0 });  // lead-in per lane
+  // Player spawns where the bots START their run — same distance from the cliff.
+  const spawnY = real.frames[0].y;
   cjPlanCache = {
     key, real, max, plans,
     takeoffY, edge, landStart, landEnd, landY: real.landY, trackLen: landEnd,
@@ -1985,9 +1985,9 @@ function renderFirstPerson(W, H) {
     const Z = 0.6;
     const paintPlan = (p, dim) => {
       const col = p.color, faint = dim ? 0.45 : 0.95;
-      for (let i = 1; i < p.groundFloor.length; i++) {  // ground curl (i=1 dashed = prestrafe lead-in)
+      for (let i = 1; i < p.groundFloor.length; i++) {  // ground curl (solid)
         const L = projectLine(p.groundFloor[i-1].x, p.groundFloor[i-1].y, Z, p.groundFloor[i].x, p.groundFloor[i].y, Z);
-        if (L) strokeLine(L[0], L[1], col, i === 1 ? 2 : (dim ? 2.5 : 3.5), i === 1);
+        if (L) strokeLine(L[0], L[1], col, dim ? 2.5 : 3.5);
       }
       for (let i = 1; i < p.airFloor.length; i++) {     // air arc projected to the floor (dashed)
         const L = projectLine(p.airFloor[i-1].x, p.airFloor[i-1].y, Z, p.airFloor[i].x, p.airFloor[i].y, Z);
