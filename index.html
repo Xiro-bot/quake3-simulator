@@ -169,6 +169,15 @@
           <option value="cpm">CPM (CPMA)</option>
         </select>
       </label>
+      <label>CJ drop
+        <select id="cjDrop">
+          <option value="0" selected>flat (0)</option>
+          <option value="48">48 below</option>
+          <option value="72">72 below (kool_mini5)</option>
+          <option value="120">120 below (kool_mini2)</option>
+          <option value="160">160 below</option>
+        </select>
+      </label>
       <label>CJ assist
         <select id="cjAssist">
           <option value="right" selected>fastest · curl right (W+D)</option>
@@ -496,6 +505,7 @@ const BOT8_LANDINGS = [
 const STRAFE_CENTERS = [75, ...BOT8_LANDINGS];
 let PAD_CENTERS = STRAFE_CENTERS.slice();
 let PAD_HALVES  = STRAFE_CENTERS.map(() => PAD_RADIUS);
+let PAD_Z       = STRAFE_CENTERS.map(() => 0);   // top-surface z per pad (CJ landing pad sits at −cjDrop)
 function onPad(x, y) {
   // Allow the player's bounding box to overhang the pad by PLAYER_RADIUS.
   // Wall clamping already constrains x, so the x-check here is informational.
@@ -538,6 +548,9 @@ const cfg = {
   view: 'fp',
   physics: 'vq3',          // 'vq3' or 'cpm' — selects PHYSICS profile
   cjAssist: 'right',       // circle-jump assistant: 'right' | 'left' | 'off'
+  cjDrop: 0,               // CJ map: how far BELOW the start pad the gap floor + landing sit
+                           // (ups). Real start pads are rarely flat: kool_mini2 drops 120,
+                           // kool_mini5 72. More drop = more airtime = more air gain.
   map: 'cj',               // 'strafe' (pad track) | 'cj' (single-gap CJ trainer) — CJ is the default open
   cjCam: 'learn',          // CJ spectate camera: 'learn' (follow the bot's view through the
                            // ground circle, face ahead in air) | 'ahead' (always down-track)
@@ -737,7 +750,17 @@ function friction(e, dt) {
   const ns = Math.max(0, s - drop);
   e.vx *= ns/s; e.vy *= ns/s;
 }
+// Floor top under world y. Only the CJ map has two heights: the start platform
+// at 0 and everything past its edge (gap void + landing platform) at −cjDrop.
+// Entities may pin their own floor (e.floorZ) — the CJ pre-sim runs in raw
+// coordinates where world y means nothing.
+function floorZAt(y) {
+  const pc = typeof cjPlanCache !== 'undefined' ? cjPlanCache : null;
+  if (cfg.map !== 'cj' || !pc || !pc.drop) return 0;
+  return y > pc.edge ? -pc.drop : 0;
+}
 function step(e, inputs, dt) {
+  const fz = e.floorZ != null ? e.floorZ : floorZAt(e.y);
   e.justLanded = false;
   e.currentInputs = inputs;
   const jumping = e.onGround && inputs.jump;
@@ -749,7 +772,7 @@ function step(e, inputs, dt) {
     if (jumping) {
       e.vz = PHYS.jumpVelocity;
       e.onGround = false;
-      e.z = 0.001;
+      e.z = fz + 0.001;
       e.lastTakeoffSpeed = Math.hypot(e.vx, e.vy);
       e.jumps += 1;
       e.jumpLog.push({n: e.jumps, takeoff: e.lastTakeoffSpeed, land: null, gain: null});
@@ -807,22 +830,22 @@ function step(e, inputs, dt) {
     // already crossed the lava plane in a gap. The inLava commit prevents
     // soft-landing on the next pad after a short jump while preserving the
     // natural arc of the fall — gravity keeps pulling, vx/vy keep coasting.
-    if (e.z <= 0 && e.vz <= 0 && (e.ghost || (onPad(e.x, e.y) && !e.inLava))) {
-      e.z = 0; e.vz = 0;
+    if (e.z <= fz && e.vz <= 0 && (e.ghost || (onPad(e.x, e.y) && !e.inLava))) {
+      e.z = fz; e.vz = 0;
       e.onGround = true; e.justLanded = true;
       e.lastLandSpeed = Math.hypot(e.vx, e.vy);
       e.lastGain = e.lastLandSpeed - e.lastTakeoffSpeed;
       const lastLog = e.jumpLog[e.jumpLog.length - 1];
       if (lastLog) { lastLog.land = e.lastLandSpeed; lastLog.gain = e.lastGain; }
-    } else if (!e.ghost && e.z < 0 && !onPad(e.x, e.y) && !e.inLava) {
+    } else if (!e.ghost && e.z < fz && !onPad(e.x, e.y) && !e.inLava) {
       // Crossed the floor plane outside any pad — commit to falling. From
       // this frame on, no pad will catch us.
       e.inLava = true;
     }
-    if (e.inLava && e.z < -TRACK.lava_depth && !e.fell) {
+    if (e.inLava && e.z < fz - TRACK.lava_depth && !e.fell) {
       e.fell = true;
       e.vx = e.vy = e.vz = 0;
-      e.z = -TRACK.lava_depth;
+      e.z = fz - TRACK.lava_depth;
     }
   }
   e.x += e.vx * dt; e.y += e.vy * dt;
@@ -842,7 +865,7 @@ function step(e, inputs, dt) {
   // Without this you fly horizontally through the next pad's front face after
   // a short jump. Binary-search the nearest pad and push y back to whichever
   // face edge is closer; zero the normal-component of vy (Q3 slide), keep vx.
-  if (!e.ghost && !e.fell && e.z < 0 && e.z > -TRACK.pad_thickness) {
+  if (!e.ghost && !e.fell) {
     let lo = 0, hi = PAD_CENTERS.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
@@ -853,7 +876,8 @@ function step(e, inputs, dt) {
       const c = PAD_CENTERS[idx];
       const yLo = c - PAD_HALVES[idx] - PLAYER_RADIUS;  // front face (with radius)
       const yHi = c + PAD_HALVES[idx] + PLAYER_RADIUS;  // back face
-      if (e.y > yLo && e.y < yHi) {
+      const top = PAD_Z[idx] || 0;                       // this pad's slab: [top − thickness, top]
+      if (e.z < top && e.z > top - TRACK.pad_thickness && e.y > yLo && e.y < yHi) {
         if (e.y - yLo < yHi - e.y) {
           e.y = yLo;
           if (e.vy > 0) e.vy = 0;
@@ -1053,6 +1077,7 @@ $('fps').onchange = e => { cfg.fps = +e.target.value; resetToStart(); };  // CJ 
 $('rate').onchange = e => cfg.rate = +e.target.value;
 $('botVis').onchange = e => cfg.botsVisible = e.target.value;
 $('cjAssist').onchange = e => { cfg.cjAssist = e.target.value; cjPlanCache = null; resetToStart(); };  // getCJ()/buildCJ() cache key
+$('cjDrop').onchange = e => { cfg.cjDrop = +e.target.value; cjPlanCache = null; resetToStart(); };
 $('map').onchange = e => {
   cfg.map = e.target.value;
   cam = me;                     // never leave the camera on a now-hidden bot
@@ -1152,7 +1177,7 @@ function kickToCJ(e) {
   // 125fps with frame-perfect ground strafe: ~410 ups VQ3, ~432 ups CPM.
   e.fell = false; e.inLava = false;  // un-commit a mid-fall entity so it can land again
   e.vx = 390 * Math.cos(e.yaw); e.vy = 390 * Math.sin(e.yaw);
-  e.vz = PHYS.jumpVelocity; e.onGround = false; e.z = 0.01;
+  e.vz = PHYS.jumpVelocity; e.onGround = false; e.z = floorZAt(e.y) + 0.01;
   e.lastTakeoffSpeed = 390; e.jumps += 1;
   e.jumpLog.push({n: e.jumps, takeoff: 390, land: null, gain: null});
   if (e.jumpLog.length > 18) e.jumpLog.shift();
@@ -1597,6 +1622,8 @@ function simCJ(airSlackDeg, hops = 1) {
   };
   const rec = [];
   const e = makeEntity(Math.PI / 2); e.ghost = true; e.noClamp = true; e.vy = 1; e.onGround = true;
+  e.floorZ = 0;                 // start pad; switched to −cjDrop once airborne (raw coords → pinned floor)
+  const drop = cfg.cjDrop || 0;
   let side = -1;   // −1 = W+A, curl LEFT-to-right (the mirror of the +1/W+D curl)
   const push = j => rec.push({ z: e.z, vx: e.vx, vy: e.vy, yaw: e.yaw,
                                onGround: e.onGround, V: Math.hypot(e.vx, e.vy), sm: 127 * side, jump: j,
@@ -1621,6 +1648,7 @@ function simCJ(airSlackDeg, hops = 1) {
   e.yaw = yawFor(e, side, 0);
   step(e, { fm: 127, sm: 127 * side, jump: true }, dt);
   push(true);
+  e.floorZ = -drop;   // past the edge: the gap floor and landing platform sit −drop below
   // Circle jump: air-strafe, flip side once at the apex (nets forward,
   // minimal lateral drift), land. With hops > 1, re-jump on the landing frame
   // (no friction on a jump frame — the landing speed carries straight into the
@@ -1636,7 +1664,7 @@ function simCJ(airSlackDeg, hops = 1) {
       step(e, { fm: 127, sm: 127 * side, jump: false }, dt);
       push(false);
       pk = Math.max(pk, Math.hypot(e.vx, e.vy));
-      if (asc && e.z <= 0) break;
+      if (asc && e.z <= e.floorZ) break;
     }
     hopPeaks.push(Math.round(pk));
   }
@@ -1674,7 +1702,7 @@ function anchorCJ(sim, key, takeoffY) {
   }
   const landY = takeoffY + sim.airDist, lastR = sim.rec[sim.rec.length - 1];
   for (let f = 0; f < Math.round(cfg.fps * 0.25); f++)  // brief settle before the loop restarts
-    frames.push({ x: lastR.X + laneX, y: landY, z: 0, yaw: Math.PI/2, vx: 0, vy: 0, V: 0,
+    frames.push({ x: lastR.X + laneX, y: landY, z: lastR.z, yaw: Math.PI/2, vx: 0, vy: 0, V: 0,
                   onGround: true, inputs: { fm: 0, sm: 0, jump: false } });
   return {
     color: sk.color, skillLabel: sk.label, laneX,
@@ -1686,7 +1714,7 @@ function anchorCJ(sim, key, takeoffY) {
   };
 }
 function buildCJ() {
-  const key = cfg.physics + '|' + cfg.fps;
+  const key = cfg.physics + '|' + cfg.fps + '|' + (cfg.cjDrop || 0);
   if (cjPlanCache && cjPlanCache.key === key) return cjPlanCache;
   const sims = {}; for (const k in CJ_SKILLS) sims[k] = simCJ(CJ_SKILLS[k].airSlackDeg, CJ_SKILLS[k].hops);
   // takeoffY anchors the lowest ground point at world y≈0 (room behind for spawn).
@@ -1710,6 +1738,7 @@ function buildCJ() {
   const spawnY = real.frames[0].y;
   cjPlanCache = {
     key, ...plans, plans,   // every CJ_SKILLS key (real/max/chain) addressable by name
+    drop: cfg.cjDrop || 0,
     takeoffY, edge, landStart, landEnd, landY: real.landY, trackLen: landEnd,
     startC, startH, landC, landH,
     gap: Math.round(landStart - edge),
@@ -1724,10 +1753,12 @@ function applyMap() {
     const p = buildCJ();
     PAD_CENTERS = [p.startC, p.landC];
     PAD_HALVES  = [p.startH, p.landH];
+    PAD_Z       = [0, -p.drop];
     TRACK.length = p.trackLen;
   } else {
     PAD_CENTERS = STRAFE_CENTERS.slice();
     PAD_HALVES  = STRAFE_CENTERS.map(() => PAD_RADIUS);
+    PAD_Z       = STRAFE_CENTERS.map(() => 0);
     TRACK.length = 30000;
   }
 }
@@ -1845,7 +1876,7 @@ function renderFirstPerson(W, H) {
   // Gap floor — solid near-black "space void". Falling reads as falling into
   // empty darkness rather than lava. Death-threshold semantics unchanged.
   {
-    const z = -TRACK.pad_thickness;
+    const z = Math.min(0, ...PAD_Z) - TRACK.pad_thickness;
     const lavaProj = projPolygonClipped([
       [-halfW, yViewMin, z], [halfW, yViewMin, z],
       [halfW, yViewMax, z],  [-halfW, yViewMax, z],
@@ -1889,17 +1920,18 @@ function renderFirstPerson(W, H) {
     // Within a single pad: also painter-sort the front/back faces so the
     // face closer to the camera is drawn LAST (occludes the further one).
     const frontCloser = Math.abs(y1 - cam.y) < Math.abs(y2 - cam.y);
+    const top = PAD_Z[k] || 0, bot = top - TRACK.pad_thickness;
     const drawFront = () => {
       const f = projPolygonClipped([
-        [-halfW, y1, 0], [halfW, y1, 0],
-        [halfW, y1, -TRACK.pad_thickness], [-halfW, y1, -TRACK.pad_thickness],
+        [-halfW, y1, top], [halfW, y1, top],
+        [halfW, y1, bot], [-halfW, y1, bot],
       ]);
       fillPoly(f, '#54637a');
     };
     const drawBack = () => {
       const f = projPolygonClipped([
-        [-halfW, y2, 0], [halfW, y2, 0],
-        [halfW, y2, -TRACK.pad_thickness], [-halfW, y2, -TRACK.pad_thickness],
+        [-halfW, y2, top], [halfW, y2, top],
+        [halfW, y2, bot], [-halfW, y2, bot],
       ]);
       fillPoly(f, '#42505f');
     };
@@ -1910,19 +1942,19 @@ function renderFirstPerson(W, H) {
     //   eye below pad bottom (z<-thickness) → draw BOTTOM (dark plate)
     //   eye in the slab middle              → only front/back cliff faces
     const eyeZ = cam.z + EYE_HEIGHT;
-    if (eyeZ > 0) {
+    if (eyeZ > top) {
       const t = projPolygonClipped([
-        [-halfW, y1, 0], [halfW, y1, 0],
-        [halfW, y2, 0],  [-halfW, y2, 0],
+        [-halfW, y1, top], [halfW, y1, top],
+        [halfW, y2, top],  [-halfW, y2, top],
       ]);
       const tClipped = clipPolyToViewport(t);
       if (tClipped.length >= 3) {
         fillPoly(tClipped, '#7b8696');
       }
-    } else if (eyeZ < -TRACK.pad_thickness) {
+    } else if (eyeZ < bot) {
       const b = projPolygonClipped([
-        [-halfW, y1, -TRACK.pad_thickness], [halfW, y1, -TRACK.pad_thickness],
-        [halfW, y2, -TRACK.pad_thickness],  [-halfW, y2, -TRACK.pad_thickness],
+        [-halfW, y1, bot], [halfW, y1, bot],
+        [halfW, y2, bot],  [-halfW, y2, bot],
       ]);
       fillPoly(b, '#3a4555');
     }
@@ -1937,7 +1969,7 @@ function renderFirstPerson(W, H) {
     if (y <= 0 || y > TRACK.length) continue;
     if (!onPad(0, y)) continue;
     if (y % 1000 === 0) {
-      const c = project(0, y, 8);
+      const c = project(0, y, floorZAt(y) + 8);
       if (c) {
         const sz = Math.max(11, Math.min(32, c.focal/c.fwd * 3));
         ctx.fillStyle = '#ffd070'; ctx.font = `bold ${sz}px monospace`;
@@ -1949,22 +1981,22 @@ function renderFirstPerson(W, H) {
   }
   // ── Finish line — checker pattern + big banner ──
   if (cam.y < TRACK.length + 500) {
-    const checkers = 12;
+    const checkers = 12, zF = floorZAt(TRACK.length);
     const cw = TRACK.width / checkers;
     for (let i = 0; i < checkers; i++) {
       const x1 = -halfW + i*cw, x2 = x1 + cw;
       // small extension before the line
       const proj = projPolygonClipped([
-        [x1, TRACK.length - 50, 0], [x2, TRACK.length - 50, 0],
-        [x2, TRACK.length, 0],      [x1, TRACK.length, 0],
+        [x1, TRACK.length - 50, zF], [x2, TRACK.length - 50, zF],
+        [x2, TRACK.length, zF],      [x1, TRACK.length, zF],
       ]);
       fillPoly(proj, (i % 2 === 0) ? '#56d364' : '#ffffff');
     }
     // Vertical banner posts + top trim
     const finTop = projectLine(-halfW, TRACK.length, TRACK.wallHeight, halfW, TRACK.length, TRACK.wallHeight);
     if (finTop) strokeLine(finTop[0], finTop[1], '#56d364', 4);
-    const finL = projectLine(-halfW, TRACK.length, 0, -halfW, TRACK.length, TRACK.wallHeight);
-    const finR = projectLine( halfW, TRACK.length, 0,  halfW, TRACK.length, TRACK.wallHeight);
+    const finL = projectLine(-halfW, TRACK.length, zF, -halfW, TRACK.length, TRACK.wallHeight);
+    const finR = projectLine( halfW, TRACK.length, zF,  halfW, TRACK.length, TRACK.wallHeight);
     if (finL) strokeLine(finL[0], finL[1], '#56d364', 5);
     if (finR) strokeLine(finR[0], finR[1], '#56d364', 5);
     // "FINISH" text on the top trim
@@ -1998,7 +2030,7 @@ function renderFirstPerson(W, H) {
   // ── CJ assistant — painted on the start pad until the first jump ──
   // ── CJ-gap: both optimal trajectories painted on the floor (always visible) ──
   if (cfg.map === 'cj') {
-    const Z = 0.6;
+    const Z = 0.6, zf = y => floorZAt(y) + 0.6;   // paint hugs whichever floor is under y
     const paintPlan = (p, dim) => {
       const col = p.color, faint = dim ? 0.45 : 0.95;
       for (let i = 1; i < p.groundFloor.length; i++) {  // ground curl (solid)
@@ -2006,13 +2038,13 @@ function renderFirstPerson(W, H) {
         if (L) strokeLine(L[0], L[1], col, dim ? 2.5 : 3.5);
       }
       for (let i = 1; i < p.airFloor.length; i++) {     // air arc projected to the floor (dashed)
-        const L = projectLine(p.airFloor[i-1].x, p.airFloor[i-1].y, Z, p.airFloor[i].x, p.airFloor[i].y, Z);
+        const L = projectLine(p.airFloor[i-1].x, p.airFloor[i-1].y, zf(p.airFloor[i-1].y), p.airFloor[i].x, p.airFloor[i].y, zf(p.airFloor[i].y));
         if (L) strokeLine(L[0], L[1], col, dim ? 2 : 3, true);
       }
       for (const ms of p.milestones) {
-        const tick = projectLine(ms.x - 9*ms.nx, ms.y - 9*ms.ny, Z, ms.x + 9*ms.nx, ms.y + 9*ms.ny, Z);
+        const tick = projectLine(ms.x - 9*ms.nx, ms.y - 9*ms.ny, zf(ms.y), ms.x + 9*ms.nx, ms.y + 9*ms.ny, zf(ms.y));
         if (tick) strokeLine(tick[0], tick[1], col, 2);
-        const lp = project(ms.x + 20*ms.nx, ms.y + 20*ms.ny, 3);
+        const lp = project(ms.x + 20*ms.nx, ms.y + 20*ms.ny, floorZAt(ms.y) + 3);
         if (lp) { ctx.fillStyle = col; ctx.font = `bold ${Math.max(9,Math.min(15,lp.focal/lp.fwd*1.4))}px monospace`; ctx.fillText(ms.V, lp.x, lp.y); }
       }
       const J = p.takeoff, RING = 16, SEG = 24;        // takeoff ring
@@ -2021,7 +2053,7 @@ function renderFirstPerson(W, H) {
       const jl = project(J.x, J.y, 30);
       if (jl) { const sz = Math.max(10,Math.min(20,jl.focal/jl.fwd*2)); ctx.fillStyle = col; ctx.font = `bold ${sz}px monospace`;
         const t1 = `${p.skillLabel.toUpperCase()} ${p.ladder}`; ctx.fillText(t1, jl.x - ctx.measureText(t1).width/2, jl.y - sz*0.6); }
-      const lc = project(J.x, p.landY, 16);
+      const lc = project(J.x, p.landY, floorZAt(p.landY) + 16);
       if (lc) { ctx.fillStyle = col; ctx.font = 'bold 12px monospace'; const t = '◎'; ctx.fillText(t, lc.x - ctx.measureText(t).width/2, lc.y); }
     };
     const both = buildCJ();
@@ -2034,10 +2066,10 @@ function renderFirstPerson(W, H) {
       if (L) { strokeLine(L[0], L[1], '#ffffff', 2); } }
     // Your landing spot + how far past each bot's landing (◎). Persists after you land.
     if (cam === me && me._landY != null) {
-      const J = { x: me._landX, y: me._landY }, RING = 14, SEG = 20, col = me.color;
-      for (let s=0;s<SEG;s++){const a1=s/SEG*2*Math.PI,a2=(s+1)/SEG*2*Math.PI;const L=projectLine(J.x+RING*Math.cos(a1),J.y+RING*Math.sin(a1),Z,J.x+RING*Math.cos(a2),J.y+RING*Math.sin(a2),Z);if(L)strokeLine(L[0],L[1],col,2.5);}
+      const J = { x: me._landX, y: me._landY }, RING = 14, SEG = 20, col = me.color, ZL = zf(J.y);
+      for (let s=0;s<SEG;s++){const a1=s/SEG*2*Math.PI,a2=(s+1)/SEG*2*Math.PI;const L=projectLine(J.x+RING*Math.cos(a1),J.y+RING*Math.sin(a1),ZL,J.x+RING*Math.cos(a2),J.y+RING*Math.sin(a2),ZL);if(L)strokeLine(L[0],L[1],col,2.5);}
       const dG = Math.round(me._landY - both.max.landY), dR = Math.round(me._landY - both.real.landY);
-      const lp = project(J.x, J.y, 18);
+      const lp = project(J.x, J.y, floorZAt(J.y) + 18);
       if (lp) {
         ctx.font = 'bold 12px monospace';
         const t1 = 'YOU LAND', t2 = `${dG>=0?'+':''}${dG} vs green · ${dR>=0?'+':''}${dR} vs blue`;
@@ -2267,7 +2299,7 @@ function renderFirstPerson(W, H) {
   if (cfg.map === 'cj') {
     const p = buildCJ();
     const lines = [
-      `CIRCLE-JUMP · ${PHYS.name} · gap ${p.gap} ups`,
+      `CIRCLE-JUMP · ${PHYS.name} · gap ${p.gap} ups${p.drop ? ` · landing ${p.drop} BELOW the start pad` : ' · flat'}`,
       `realistic: takeoff ~${Math.round(p.real.V0)} → peak ~${p.real.peakV|0} ups`,
       `frame-perfect: takeoff ~${Math.round(p.max.V0)} → peak ~${p.max.peakV|0} ups`,
       `CJ + 1 hop: ${p.chain.ladder} ups — the "600 after a CJ" is the NEXT jump`,
